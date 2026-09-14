@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. Built for agents, and what that actually changes</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#1a1815;--muted:#5e5850;--rule:#e3ded5;
+--code-bg:#f2efe9;--accent:#8a4218;--accent-soft:#f0e4da;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#15140f;--fg:#ecebe6;--muted:#a09a8f;
+--rule:#2e2b25;--code-bg:#1e1c18;--accent:#e0a473;--accent-soft:#2a211a;--card:#1e1c18}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+.wrap{max-width:44rem;margin:0 auto;padding:0 1.3rem 4rem}
+a{color:var(--accent)}
+nav{border-bottom:1px solid var(--rule);margin-bottom:2.4rem}
+nav .wrap{padding-top:1.1rem;padding-bottom:1.1rem;display:flex;gap:1rem;
+align-items:baseline;font:.9rem ui-sans-serif,system-ui,sans-serif}
+nav a{text-decoration:none;font-weight:600}
+nav .sep{color:var(--muted)}
+h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
+h1{font-size:2rem;margin:1.6rem 0 1.4rem}
+h2{font-size:1.4rem;margin:3rem 0 .8rem}
+h3{font-size:1.05rem;margin:1.9rem 0 .5rem}
+p{margin:0 0 1.1rem}
+ul,ol{margin:0 0 1.2rem;padding-left:1.3rem}li{margin-bottom:.4rem}
+code{font:.87em ui-monospace,Menlo,monospace;background:var(--code-bg);
+padding:.1em .35em;border-radius:5px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.3rem}
+pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+blockquote{border-left:3px solid var(--accent);background:var(--accent-soft);
+border-radius:0 10px 10px 0;padding:.9rem 1.1rem;margin:0 0 1.3rem}
+blockquote p:last-child{margin:0}
+table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
+font:.92rem ui-sans-serif,system-ui,sans-serif}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);
+vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.8rem;letter-spacing:.04em;
+text-transform:uppercase}
+hr{border:0;border-top:1px solid var(--rule);margin:2.4rem 0}
+img{max-width:100%;border:1px solid var(--rule);border-radius:12px}
+footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;
+color:var(--muted);font-size:.9rem}
+@media(max-width:620px){body{font-size:16px}h1{font-size:1.6rem}.wrap{padding:0 1rem 3rem}}
+</style>
+</head>
+<body>
+<nav><div class="wrap"><a href="index.html">Overview</a><span class="sep">/</span><span class="sep">6. Built for agents, and what that actually changes</span></div></nav>
+<div class="wrap">
+<h1>6. Built for agents, and what that actually changes</h1>
+<p>This part is not about Wantzel. It is about what a ticket system has to do differently when most of the writing is done by machines — and it is the reason this project is a tool we use rather than a demonstration we wrote.</p>
+<h2>The problem is volume, not quality</h2>
+<p>Agent output is usually fine. There is just an enormous amount of it, arriving fast.</p>
+<p>A person investigating a bug writes one line: <em>&quot;the cap was there, the answer did not mention it.&quot;</em> An agent investigating the same bug writes the four hundred lines that led to that sentence — what it read, what it ruled out, the two approaches that failed. Both are worth having. The four hundred lines are what make the decision reconstructable in a month by someone who was not there. But they are not what a person scanning a backlog on Monday morning needs.</p>
+<p>A week of this and the ticket that took a minute to read takes twenty. So people stop reading tickets. The record still exists and nobody consults it, which is indistinguishable from not having one.</p>
+<p>This is the failure mode of every tracker we have watched agents get pointed at. It is not a bug in those trackers. They were designed when the cost of writing a comment was a person&#x27;s time, and that cost did the filtering for free.</p>
+<h2>Two answers that both lose</h2>
+<p><strong>Forbid agents to write.</strong> You keep the tickets readable and lose precisely the detail that made them worth keeping. The next person to touch the problem starts from zero.</p>
+<p><strong>Let them write, and tell people to skim.</strong> People do not skim; they disengage. Within a sprint the humans are working from chat and the tickets are an audit log nobody opens.</p>
+<p>Both answers treat the two kinds of writing as if they were the same kind, competing for one space. They are not.</p>
+<h2>The decision: two registers, and the reader picks</h2>
+<p>Every comment and every work log line carries an <code>audience</code>:</p>
+<table><tbody><tr><td><code>human</code></td><td>short, plain, written to be read by a person</td></tr><tr><td><code>agent</code></td><td>complete, detailed, written to be read by a machine</td></tr></tbody></table>
+<p>The default is <code>human</code>. A field that defaults to the noisy value fills up with noise on its own, and an author who has not thought about audience is nearly always writing for a person.</p>
+<p>One switch in the top bar — labelled <strong>Clean</strong> / <strong>Everything</strong> — folds every <code>agent</code> entry away, everywhere at once: the cards, the list and the open ticket. It is remembered in the browser, so someone who wants clean tickets sets it once and never again.</p>
+<p>In the clean view a ticket shows its human comments and human work log, with a line above them reading <em>&quot;2 agent entries hidden · show&quot;</em> — which is itself the button. Flip it and the agent entries appear in place, tinted and tagged, so you can read how the agents worked through the problem without leaving the ticket.</p>
+<h3>Why it is per entry and not per ticket</h3>
+<p>A ticket collects a human line, three hundred agent lines, and another human line, all interleaved. A <code>verbose</code> flag on the ticket would force you to choose a register for the <em>container</em>, when the register belongs to each thing written into it. Per entry is the only split that survives contact with a real ticket.</p>
+<h3>Why a hidden entry is always counted</h3>
+<p>The clean view says <em>&quot;11 agent entries hidden&quot;</em> and you can click it. It never simply drops them.</p>
+<p>That is the whole feature, actually. If the clean view could silently omit things, you would learn not to trust it, and then you would turn it off permanently and be back where you started. Announcing the fold is what makes it safe to use — and it means you can always look at how the agents talked to each other, in the same ticket, without leaving it.</p>
+<h2><code>flow</code>: who is talking to whom</h2>
+<p>A closed set of four, deliberately not a label:</p>
+<pre><code>h2a   a person asked an agent to do something
+a2h   an agent needs a person: a decision, an approval, a credential
+a2a   one agent handed work to another
+h2h   two people, the way tickets have always worked</code></pre>
+<p>It answers the question that matters most in a mixed backlog: <strong>what is waiting on me?</strong></p>
+<p>An <code>a2h</code> ticket is blocking a machine that would otherwise still be working. That is a different kind of urgent from a P0 nobody has started, and neither <code>status</code> nor <code>priority</code> can express it — <code>todo</code> does not distinguish &quot;not started&quot; from &quot;stopped, waiting for a human.&quot; So it is a field.</p>
+<p>A label would not do. Labels are free-form and mean whatever a team decides; this changes how a ticket is <em>read</em>, so it has to mean the same thing in every installation.</p>
+<h2>Claiming: a conditional write, not an update</h2>
+<p>Two agents reading the same backlog pick the same top ticket, because they are looking at the same order and they are both right. With people, a standup resolves this. With agents it is two hours of duplicated work, discovered at merge time.</p>
+<p><code>update_ticket</code> cannot fix it. Read-then-write leaves a gap between the read and the write, and that gap is exactly where both agents decide to go.</p>
+<p><code>claim_ticket(id, who)</code> sets the assignee and the status in one call and <strong>refuses</strong> if the ticket is already held. The refusal is the useful half: the second agent learns immediately and takes the next ticket instead of finding out at merge time.</p>
+<p><code>release_ticket(id)</code> exists because an agent that dies holding a claim has removed that ticket from the backlog for everyone, and nothing else can give it back.</p>
+<h2><code>next_ticket</code>: put the ordering rule on the server</h2>
+<p>Without it, every agent implements this itself: list everything, filter for todo, drop the assigned ones, drop the ones with open blockers, sort by priority, take the first. Five steps, and each agent gets them subtly differently — so two agents disagree about what &quot;next&quot; is while both believe they are following the backlog.</p>
+<p>One call, one rule, one answer:</p>
+<ol><li>not done, and not assigned to someone else</li><li>nothing unfinished blocking it</li><li>highest priority first</li><li>oldest first within a priority — newest-first starves the oldest work, forever</li></ol>
+<p>An empty answer is a normal result, not an error. &quot;Nothing to do&quot; is a state a backlog is often in, and an agent should not have to catch an exception to discover it.</p>
+<h2>What we deliberately did not build</h2>
+<p>Each of these was considered and dropped, because a ticket system for agents fails the same way every other tracker fails — by acquiring fields nobody fills in.</p>
+<ul><li><strong>More statuses.</strong> Three. Every extra one is a decision someone has to make on every ticket, forever, and <code>todo</code>/<code>doing</code>/<code>done</code> has never yet been the thing that was missing.</li><li><strong>Per-agent permissions.</strong> One process, one backlog. The moment you need to defend a backlog from its own agents, the problem is upstream of the tracker.</li><li><strong>Automatic summarising of agent threads.</strong> Tempting, and wrong: a summary written by a machine of machine output is where the detail silently disappears. The fold already solves the reading problem, and it is reversible.</li><li><strong>Threaded replies.</strong> A ticket is a thread. Threads inside threads are how trackers become unreadable, and agents would nest them four deep by Tuesday.</li></ul>
+<h2>The honest limit</h2>
+<p>One process writes. Two servers on the same directory would need locking, and that is a different program. A ticket holds a stated maximum number of comments and work log lines, and reaching it <strong>refuses the write</strong> rather than dropping it — because a silent drop is data loss that looks like success, and an agent can act on a refusal by summarising into the work log and starting fresh.</p>
+<footer>A demo of <a href="https://wantzel.com">Wantzel</a> &middot; </footer>
+</div>
+</body>
+</html>

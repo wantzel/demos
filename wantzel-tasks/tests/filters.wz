@@ -1,0 +1,113 @@
+// list_tickets: every filter narrows on its own, an unset filter narrows nothing, and
+// `query` looks in both title and body, case-insensitively.
+program test_filters;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+// Build a ticket that differs from the others in every filterable field, so a filter
+// that accidentally matches everything (or nothing) is caught rather than hidden by
+// tickets that happen to share a value.
+procedure make_full(title, body, status, priority, area, kind, assignee, milestone, label: str;
+                     change_status: bool);
+begin
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, title);
+  t.ca[0].body_n := io.push(t.ca[0].body, 0, body);
+  t.ca[0].body_ok := true;
+  t.ca[0].priority_n := io.push(t.ca[0].priority, 0, priority);
+  t.ca[0].priority_ok := true;
+  t.ca[0].area_n := io.push(t.ca[0].area, 0, area);
+  t.ca[0].area_ok := true;
+  t.ca[0].kind_n := io.push(t.ca[0].kind, 0, kind);
+  t.ca[0].kind_ok := true;
+  t.ca[0].assignee_n := io.push(t.ca[0].assignee, 0, assignee);
+  t.ca[0].assignee_ok := true;
+  t.ca[0].milestone_n := io.push(t.ca[0].milestone, 0, milestone);
+  t.ca[0].milestone_ok := true;
+  t.ca[0].labels_len[0] := io.push(t.ca[0].labels, 0, label);
+  t.ca[0].labels_n := 1;
+  t.ca[0].labels_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc = 0, "a fully specified ticket is accepted");
+  if change_status then
+  begin
+    UpdateArgs.clear(t.ua);
+    t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.one[0].ticket.id, t.one[0].ticket.id_n);
+    t.ua[0].status_n := io.push(t.ua[0].status, 0, status);
+    t.ua[0].status_ok := true;
+    TicketOne.clear(t.one);
+    t.rc := tool.update_ticket(t.ua, t.one);
+    t.ok(t.rc = 0, "moving a ticket's status for the fixture is accepted");
+  end;
+end;
+
+begin
+  t.start("filters");
+
+  // Two tickets that differ in every field a filter can touch.
+  make_full("Fix the login crash", "Users cannot sign in on mobile.",
+            "doing", "P0", "api", "bug", "floris", "release-1", "urgent", true);
+  make_full("Write onboarding docs", "Explain the setup for new contributors.",
+            "todo", "P3", "docs", "doc", "anna", "release-2", "writing", false);
+
+  // ---- an unset filter narrows nothing ---------------------------------------
+  ListArgs.clear(t.la);
+  TicketList.clear(t.lst);
+  t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.rc, 0, "an empty filter is accepted");
+  t.eqint(t.lst[0].matched, 2, "an empty filter returns every ticket, not just the first");
+
+  // ---- each field narrows on its own -----------------------------------------
+  ListArgs.clear(t.la); t.la[0].status_n := io.push(t.la[0].status, 0, "doing"); t.la[0].status_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "status=doing keeps only the ticket being worked on");
+
+  ListArgs.clear(t.la); t.la[0].priority_n := io.push(t.la[0].priority, 0, "P0"); t.la[0].priority_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "priority=P0 keeps only the urgent one");
+
+  ListArgs.clear(t.la); t.la[0].area_n := io.push(t.la[0].area, 0, "docs"); t.la[0].area_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "area=docs keeps only the docs ticket");
+
+  ListArgs.clear(t.la); t.la[0].kind_n := io.push(t.la[0].kind, 0, "bug"); t.la[0].kind_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "kind=bug keeps only the bug");
+
+  ListArgs.clear(t.la); t.la[0].assignee_n := io.push(t.la[0].assignee, 0, "anna"); t.la[0].assignee_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "assignee=anna keeps only anna's ticket");
+
+  ListArgs.clear(t.la); t.la[0].milestone_n := io.push(t.la[0].milestone, 0, "release-1"); t.la[0].milestone_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "milestone=release-1 keeps only that milestone's ticket");
+
+  ListArgs.clear(t.la); t.la[0].label_n := io.push(t.la[0].label, 0, "writing"); t.la[0].label_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "label=writing keeps only the labelled ticket");
+
+  // ---- free-text query: title OR body, case-insensitive ----------------------
+  ListArgs.clear(t.la); t.la[0].query_n := io.push(t.la[0].query, 0, "LOGIN"); t.la[0].query_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "query matches the title case-insensitively");
+
+  ListArgs.clear(t.la); t.la[0].query_n := io.push(t.la[0].query, 0, "CONTRIBUTORS"); t.la[0].query_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 1, "query also matches the body, not only the title");
+
+  ListArgs.clear(t.la); t.la[0].query_n := io.push(t.la[0].query, 0, "nonexistentword"); t.la[0].query_ok := true;
+  TicketList.clear(t.lst); t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.lst[0].matched, 0, "query finds nothing when the words are absent from both fields");
+
+  t.done;
+end.

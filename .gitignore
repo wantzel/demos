@@ -1,3 +1,4 @@
 # Built binaries: a demo is source, and a committed binary never comes out of the history.
 *.exe
 /**/demo
+/**/bin/

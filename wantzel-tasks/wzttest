@@ -1,0 +1,59 @@
+#!/bin/sh
+# wzttest -- compile and run every test in tests/, and say what passed.
+#
+#   ./wzttest              all of them
+#   ./wzttest store        only those whose name contains "store"
+#
+# tests/_*.wz are shared includes, not tests, and are skipped.
+#
+# Every test is a Wantzel program that exits 0 when it passes. No framework and no
+# runner to configure: a test is a program, and the compiler is the first thing that
+# judges it -- a test that does not compile is a failing test.
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [ -z "$WANTZEL" ]; then
+  for c in "$here/../../wantzel/bin/wantzel" "$here/../wantzel/bin/wantzel" "$(command -v wantzel || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then WANTZEL="$c"; break; fi
+  done
+fi
+[ -x "$WANTZEL" ] || { echo "wzttest: no wantzel compiler found (set WANTZEL)" >&2; exit 2; }
+
+# See wztrun: the version these tests were written against.
+WANTZEL_TESTED=0.1.2
+have=$("$WANTZEL" --version 2>/dev/null | awk '{print $2}')
+if [ -n "$have" ] && [ "$have" != "$WANTZEL_TESTED" ]; then
+  echo "note: tests written against Wantzel $WANTZEL_TESTED, you have $have" >&2
+fi
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+pass=0; fail=0; failed=''
+
+for t in "$here"/tests/*.wz; do
+  name=$(basename "$t" .wz)
+  # A leading underscore means "included by tests, not a test itself" -- _helpers.wz has
+  # no `program` line, so compiling it as a test would report a failure that is not one.
+  case "$name" in _*) continue ;; esac
+  case "$1" in "") ;; *) case "$name" in *"$1"*) ;; *) continue ;; esac ;; esac
+
+  if ! out=$("$WANTZEL" "$t" "$tmp/$name" 2>&1); then
+    printf '  FAIL  %-28s did not compile\n' "$name"
+    printf '%s\n' "$out" | sed 's/^/          /'
+    fail=$((fail + 1)); failed="$failed $name"; continue
+  fi
+
+  # each test gets its own empty data directory, so one cannot see another's tickets
+  rm -rf "$tmp/d-$name"; mkdir -p "$tmp/d-$name"
+  if out=$(cd "$tmp" && "./$name" "$tmp/d-$name" 2>&1); then
+    printf '  ok    %s\n' "$name"
+    pass=$((pass + 1))
+  else
+    printf '  FAIL  %s\n' "$name"
+    printf '%s\n' "$out" | sed 's/^/          /'
+    fail=$((fail + 1)); failed="$failed $name"
+  fi
+done
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ] || { echo "failed:$failed"; exit 1; }

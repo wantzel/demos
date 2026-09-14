@@ -1,0 +1,221 @@
+// main.wz -- wantzel-tasks: one service, reachable three ways.
+//
+//   wantzel-tasks --data ./data --port 7777     web UI, REST and MCP over HTTP
+//   wantzel-tasks --data ./data --stdio         MCP over stdin/stdout, for an agent
+//
+// THE WHOLE POINT IS IN app.request BELOW: three routes, and two of them are one line,
+// because the compiler generated everything behind them from the `tools` block in
+// schema.wz. There is no framework, no router configuration and no serialisation layer
+// to keep in step with the schema -- the schema IS those things.
+//
+//   GET  /              the web UI (one page, carried inside the binary)
+//   POST /api/<tool>    REST: arguments as JSON, result as JSON
+//   POST /mcp           MCP, for Claude, Codex, Cursor and anything else that speaks it
+//   GET  /tools.json     the tool table with a JSON Schema per tool, generated
+//
+// The order of the includes matters and is worth stating once: schema first (it declares
+// the shapes and the tool table), then the handlers, then lib/tools.wz which builds the
+// dispatch from what it now knows exists.
+
+program wantzel_tasks;
+
+include "mcphttp.wz";
+include "router.wz";
+
+include "schema.wz";
+include "tickets.wz";
+include "query.wz";
+include "ui.wz";
+
+include "tools.wz";
+
+var
+  app.datadir: array[0..1023] of char;
+  app.datalen: int;
+  app.port: int;
+  app.stdio: bool;
+  app.ok: bool;
+
+// ---- routing ---------------------------------------------------------------
+
+procedure app.request;
+begin
+  // REST: POST /api/<tool>. One line, and every tool in the table is reachable.
+  if tool.rest("/api/") then return;
+
+  // MCP over HTTP, for an agent that connects over the network rather than a pipe.
+  if http.pathis("/mcp") then
+  begin
+    mcp.http;
+    return;
+  end;
+
+  // The tool table as JSON, which is the same text the MCP tools/list reply carries:
+  // names, descriptions and a JSON Schema per tool, all generated. A REST client can
+  // read this to discover what exists without being told.
+  //
+  // (lib/openapi.wz would turn this into a full OpenAPI document, but it also wants an
+  // OAuth issuer and a callback this demo has no use for -- so the table itself is the
+  // honest answer here.)
+  if router.get("/docs") then
+  begin
+    ui.docs;
+    return;
+  end;
+
+  if router.get("/tools.json") then
+  begin
+    // tool.list is the generated table as bare entries, the shape MCP wants inside its
+    // own envelope. Served on its own it still has to be valid JSON, so it is wrapped
+    // here -- without this the answer parses as "extra data after the first object".
+    http.add("{\"tools\":[");
+    http.add(tool.list);
+    http.add("]}");
+    http.finish(200, "application/json");
+    return;
+  end;
+
+  // The UI. Everything else is not found, and says where the three doors are rather
+  // than leaving a caller to guess.
+  if router.get("/") then
+  begin
+    ui.page;
+    return;
+  end;
+
+  http.add("{\"detail\":\"not found -- the UI is at GET /, REST at POST /api/<tool>, MCP at POST /mcp\"}");
+  http.finish(404, "application/json");
+end;
+
+// ---- start -----------------------------------------------------------------
+
+procedure app.usage;
+begin
+  io.puts(STDERR, "wantzel-tasks -- tickets over MCP, REST and a web UI\n\n");
+  io.puts(STDERR, "  wantzel-tasks --data DIR --port 7777    serve\n");
+  io.puts(STDERR, "  wantzel-tasks --data DIR --stdio        speak MCP on stdin/stdout\n");
+  halt(2);
+end;
+
+function app.argis(i: int; s: str): bool;
+var j: int;
+    c: char;
+begin
+  j := 0;
+  while true do
+  begin
+    c := argch(i, j);
+    if j >= slen(s) then return c = chr(0);
+    if c <> schar(s, j) then return false;
+    j := j + 1;
+  end;
+  return false;
+end;
+
+function app.argnum(i: int): int;
+var j, v: int;
+    c: char;
+begin
+  v := 0; j := 0;
+  while true do
+  begin
+    c := argch(i, j);
+    if c = chr(0) then break;
+    if (c < '0') or (c > '9') then return -1;
+    v := v * 10 + (ord(c) - 48);
+    j := j + 1;
+  end;
+  return v;
+end;
+
+// One line of the startup banner: a full, clickable address and what is behind it.
+procedure app.door(path: str; what: str);
+var i: int;
+begin
+  io.puts(STDERR, "  http://127.0.0.1:");
+  io.putn(STDERR, app.port);
+  io.puts(STDERR, path);
+  for i := slen(path) to 14 do io.puts(STDERR, " ");
+  io.puts(STDERR, "  ");
+  io.puts(STDERR, what);
+  io.puts(STDERR, "\n");
+end;
+
+procedure app.readargs;
+var i, j: int;
+    c: char;
+begin
+  app.port := 0;
+  app.stdio := false;
+  app.datalen := 0;
+  i := 1;
+  while i < argc() do
+  begin
+    if app.argis(i, "--data") and (i + 1 < argc()) then
+    begin
+      i := i + 1;
+      j := 0;
+      while true do
+      begin
+        c := argch(i, j);
+        if c = chr(0) then break;
+        if j >= 1023 then io.fatal("--data path is too long");
+        app.datadir[j] := c;
+        j := j + 1;
+      end;
+      app.datalen := j;
+    end
+    else if app.argis(i, "--port") and (i + 1 < argc()) then
+    begin
+      i := i + 1;
+      app.port := app.argnum(i);
+      if app.port <= 0 then io.fatal("--port wants a number");
+    end
+    else if app.argis(i, "--stdio") then app.stdio := true
+    else app.usage;
+    i := i + 1;
+  end;
+  if app.datalen = 0 then app.datalen := io.push(app.datadir, 0, "./data");
+  if (app.port = 0) and not app.stdio then app.port := 7777;
+end;
+
+begin
+  app.readargs;
+
+  // Read the directory once. Every ticket is then in memory, so a read never touches the
+  // disk again -- while the files stay the source of truth, which is what makes editing
+  // one by hand legitimate rather than a trick.
+  tk.dirn := tk.set(tk.dir, TK.PATHLEN, app.datadir, app.datalen);
+  tk.loadall;
+
+  // Who we say we are when an MCP client calls `initialize`. It is the first call every
+  // client makes, and it is the only one that reads these -- so leaving them unset is a
+  // fault you do not see until a real client connects, and then it looks like the server
+  // dropped the connection.
+  mcp.name := "wantzel-tasks";
+  mcp.version := "0.1.0";
+
+  if app.stdio then
+  begin
+    mcp.stdio;
+    halt(0);
+  end;
+
+  // The whole address is printed, not just the path: a terminal makes a full URL
+  // clickable, and "GET /" is something you then have to assemble by hand.
+  io.puts(STDERR, "wantzel-tasks  ");
+  io.putn(STDERR, tk.n);
+  io.puts(STDERR, " tickets\n\nOne server, four doors -- all on port ");
+  io.putn(STDERR, app.port);
+  io.puts(STDERR, ":\n\n");
+  app.door("/", "the board, in a browser");
+  app.door("/docs", "the API, generated from schema.wz");
+  app.door("/api/<tool>", "REST -- POST, arguments as JSON");
+  app.door("/mcp", "MCP -- POST, for Claude, Codex, Cursor");
+  io.puts(STDERR, "\n");
+
+  // One worker: every write goes through one process, which is what makes the log a
+  // single sequence and the in-memory rows the truth. Two writers would need a lock
+  // around every change, and that is a different program.
+  http.serve(app.port, 1);
+end.

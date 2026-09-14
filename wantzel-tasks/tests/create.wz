@@ -1,0 +1,80 @@
+// create_ticket: what it fills in for you, and what it refuses.
+program test_create;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+begin
+  t.start("create");
+
+  // ---- the defaults, which are a decision and therefore worth a test --------
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "A ticket with only a title");
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.eqint(t.rc, 0, "a title alone is enough to create a ticket");
+  t.eqtext(t.one[0].ticket.status, t.one[0].ticket.status_n, "todo", "a new ticket starts as todo");
+  t.eqtext(t.one[0].ticket.priority, t.one[0].ticket.priority_n, "P2", "and at P2 unless told otherwise");
+  t.eqtext(t.one[0].ticket.area, t.one[0].ticket.area_n, "general", "and in the general area");
+  t.eqtext(t.one[0].ticket.id, t.one[0].ticket.id_n, "T-0001", "the first id is T-0001");
+  t.ok(t.one[0].ticket.created_n > 0, "created is stamped");
+  t.ok(t.one[0].ticket.updated_n > 0, "updated is stamped too");
+  t.ok(not t.one[0].ticket.kind_ok, "kind stays absent when it was not given");
+
+  // ---- ids do not repeat ---------------------------------------------------
+  t.make("The second one");
+  t.eqtext(t.lastid, t.lastidn, "T-0002", "the next id counts on");
+
+  // ---- what it refuses, and why --------------------------------------------
+  // An empty title is refused rather than stored: a ticket nobody can recognise in a
+  // list is worse than a rejected call, because the rejection is visible immediately.
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := 0;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc <> 0, "an empty title is refused");
+
+  // A misspelled priority is refused by name, so the caller learns the four that exist
+  // instead of ending up with a ticket at priority "high" that nothing else recognises.
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Bad priority");
+  t.ca[0].priority_n := io.push(t.ca[0].priority, 0, "P9");
+  t.ca[0].priority_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc <> 0, "P9 is not a priority and is refused");
+
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Bad kind");
+  t.ca[0].kind_n := io.push(t.ca[0].kind, 0, "feature");
+  t.ca[0].kind_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc <> 0, "\"feature\" is not one of the five kinds and is refused");
+
+  // ---- a refused create must not burn an id ---------------------------------
+  // An id comes from a counter, so taking one before validating leaves a permanent hole:
+  // the ticket that does not exist reads as deleted rather than never-created, and an
+  // agent retrying a rejected call burns an id every attempt. Found in the wild -- a
+  // client's first create was refused and the numbering skipped one for good.
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Refused, so it should cost nothing");
+  t.ca[0].kind_n := io.push(t.ca[0].kind, 0, "feature");
+  t.ca[0].kind_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc <> 0, "a create with a bad kind is refused");
+
+  t.make("The one after a refusal");
+  t.eqtext(t.lastid, t.lastidn, "T-0003", "and the refusal did not consume an id");
+
+  t.done;
+end.

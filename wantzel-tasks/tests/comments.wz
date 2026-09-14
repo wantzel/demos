@@ -1,0 +1,123 @@
+// add_comment and log_work: append-only history on a ticket.
+//
+// Comments are a message to someone (author + text); a work log line is a dated fact.
+// Both come back on get_ticket, both are oldest-first, and both bump `updated` --
+// otherwise "has anything happened here?" would need a scan of the conversation.
+program test_comments;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+var
+  cargs: array[0..0] of CommentArgs;
+  largs: array[0..0] of LogArgs;
+
+begin
+  t.start("comments");
+
+  t.make("A ticket to discuss");
+
+  // ---- add_comment appends with author and timestamp -------------------------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := tk.set(cargs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  cargs[0].author_n := io.push(cargs[0].author, 0, "floris");
+  cargs[0].text_n := io.push(cargs[0].text, 0, "What do you think of this approach?");
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.eqint(t.rc, 0, "add_comment on an existing ticket is accepted");
+  t.eqint(t.one[0].ticket.comments_n, 1, "the comment is on the ticket that comes back");
+  t.eqtext(t.one[0].ticket.comments[0].author, t.one[0].ticket.comments[0].author_n,
+           "floris", "the author is recorded");
+  t.eqtext(t.one[0].ticket.comments[0].text, t.one[0].ticket.comments[0].text_n,
+           "What do you think of this approach?", "and the text is recorded");
+  t.ok(t.one[0].ticket.comments[0].at_n > 0, "a comment carries a timestamp");
+  t.ok(t.one[0].ticket.updated_n > 0, "adding a comment bumps updated");
+
+  // ---- a second comment: comments are oldest-first, not newest-first ----------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := tk.set(cargs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  cargs[0].author_n := io.push(cargs[0].author, 0, "anna");
+  cargs[0].text_n := io.push(cargs[0].text, 0, "Looks fine to me.");
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.eqint(t.rc, 0, "a second comment is accepted");
+  t.eqint(t.one[0].ticket.comments_n, 2, "both comments are kept");
+  t.eqtext(t.one[0].ticket.comments[0].author, t.one[0].ticket.comments[0].author_n,
+           "floris", "the first comment stays first -- oldest-first, not newest-first");
+  t.eqtext(t.one[0].ticket.comments[1].author, t.one[0].ticket.comments[1].author_n,
+           "anna", "the second comment is appended after it");
+
+  // ---- comments come back on a plain get_ticket too ----------------------------
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "get_ticket on the discussed ticket is accepted");
+  t.eqint(t.one[0].ticket.comments_n, 2,
+          "the conversation is there on a plain get, not just on the call that added it");
+
+  // ---- an empty comment is refused ---------------------------------------------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := tk.set(cargs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  cargs[0].author_n := io.push(cargs[0].author, 0, "floris");
+  cargs[0].text_n := 0;
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.ok(t.rc <> 0, "an empty comment is refused rather than stored as silence");
+
+  // ---- a missing id is refused ---------------------------------------------------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := io.push(cargs[0].id, 0, "T-9999");
+  cargs[0].author_n := io.push(cargs[0].author, 0, "floris");
+  cargs[0].text_n := io.push(cargs[0].text, 0, "Talking to nobody");
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.ok(t.rc <> 0, "commenting on an id that does not exist is refused");
+
+  // ---- log_work appends a dated line to worklog ---------------------------------
+  LogArgs.clear(largs);
+  largs[0].id_n := tk.set(largs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  largs[0].text_n := io.push(largs[0].text, 0, "measured the login latency: 400ms p50");
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.eqint(t.rc, 0, "log_work on an existing ticket is accepted");
+  t.eqint(t.one[0].ticket.worklog_n, 1, "the line lands in worklog");
+  t.eqtext(t.one[0].ticket.worklog[0].text, t.one[0].ticket.worklog[0].text_n,
+           "measured the login latency: 400ms p50", "and the text itself is recorded");
+  t.ok(t.one[0].ticket.worklog[0].at_n > 0, "a work log line carries its own date, same as a comment carries at");
+  t.ok(t.one[0].ticket.updated_n > 0, "log_work bumps updated too, same as a comment does");
+
+  // A second line: worklog is append-only and oldest-first, same as comments.
+  LogArgs.clear(largs);
+  largs[0].id_n := tk.set(largs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  largs[0].text_n := io.push(largs[0].text, 0, "second finding");
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.eqint(t.rc, 0, "a second work log line is accepted");
+  t.eqint(t.one[0].ticket.worklog_n, 2, "both lines are kept");
+
+  // ---- log_work also refuses what add_comment refuses ---------------------------
+  LogArgs.clear(largs);
+  largs[0].id_n := tk.set(largs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  largs[0].text_n := 0;
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.ok(t.rc <> 0, "an empty work log line is refused");
+
+  LogArgs.clear(largs);
+  largs[0].id_n := io.push(largs[0].id, 0, "T-9999");
+  largs[0].text_n := io.push(largs[0].text, 0, "orphan line");
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.ok(t.rc <> 0, "logging work against a missing id is refused");
+
+  t.done;
+end.

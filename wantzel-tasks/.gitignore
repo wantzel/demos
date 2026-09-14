@@ -1,0 +1,15 @@
+# What wztrun produces. The source is the project; the binary is what you get from it,
+# and a committed binary is the one thing you can never take back out of a history.
+/bin/
+
+# data/ IS committed, on purpose. The tickets in it are this project's own backlog -- every
+# decision made while building it, including the ones that were wrong -- and the README and
+# the documentation both point at it as the thing you should read. Ignoring it would make a
+# fresh clone open on an empty board and turn that claim into a lie.
+#
+# It does mean your own tickets show up in `git status` once you start using it. Empty the
+# directory if you want a board of your own.
+
+# The contact sheet the screenshot tooling writes, so a whole set can be reviewed in one
+# page. It is in Dutch, it is for us, and nothing in the documentation links to it.
+/docs/img/index.html

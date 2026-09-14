@@ -1,0 +1,505 @@
+// tickets.wz -- the six tools.
+//
+// One function per line of the `tools` block in schema.wz. The compiler already parsed
+// the arguments, checked the types and will write the result: what is left here is the
+// decision. That is why these functions are short -- there is no validation layer, no
+// serialisation and no routing in them, because none of that is hand-written.
+//
+// The shape is always the same:
+//   a[0]  arguments, already parsed and type-checked
+//   r[0]  the result to fill
+//   0     success; tool.fail(...) is an error the caller can read
+//
+// An optional argument arrives as two fields: <name>_ok says whether it was sent at all,
+// <name>_null whether it was sent as null. That distinction is the whole reason update
+// needs no separate patch call -- "not sent" and "sent as empty" are different requests.
+
+// OUR store layer, not the library's. The name matters: `include "store.wz"` would find
+// lib/store.wz on the compiler's path instead of this file, and the failure is confusing
+// -- the include silently resolves elsewhere and every TK.* constant reads as undeclared.
+// A project file that shares a name with a library file is a trap; give it its own.
+include "tickets_store.wz";
+
+// ---- turning a row into an answer ------------------------------------------
+
+// Copy the loaded row into a Ticket result. Every tool that returns a ticket goes
+// through here, so there is one place where the wire shape is decided.
+procedure tkt.out(t: array of Ticket);
+var i: int;
+begin
+  Ticket.clear(t);
+  t[0].id_n     := tk.set(t[0].id,     TK.IDLEN,     tk.r.id,     tk.r.idn);
+  t[0].title_n  := tk.set(t[0].title,  TK.TITLELEN,  tk.r.title,  tk.r.titlen);
+  t[0].body_n   := tk.set(t[0].body,   TK.BODYLEN,   tk.r.body,   tk.r.bodyn);
+  t[0].status_n := tk.set(t[0].status, TK.SHORTLEN, tk.r.status, tk.r.statusn);
+  t[0].priority_n := tk.set(t[0].priority, TK.SHORTLEN, tk.r.prio, tk.r.prion);
+  t[0].area_n   := tk.set(t[0].area,   TK.SHORTLEN,   tk.r.area,   tk.r.arean);
+  if tk.r.kindn > 0 then
+  begin
+    t[0].kind_n := tk.set(t[0].kind, TK.SHORTLEN, tk.r.kind, tk.r.kindn);
+    t[0].kind_ok := true;
+  end;
+  if tk.r.whon > 0 then
+  begin
+    t[0].assignee_n := tk.set(t[0].assignee, TK.WHOLEN, tk.r.who, tk.r.whon);
+    t[0].assignee_ok := true;
+  end;
+  if tk.r.msn > 0 then
+  begin
+    t[0].milestone_n := tk.set(t[0].milestone, TK.MSLEN, tk.r.ms, tk.r.msn);
+    t[0].milestone_ok := true;
+  end;
+  if tk.r.flown > 0 then
+  begin
+    t[0].flow_n := tk.set(t[0].flow, TK.FLOWLEN, tk.r.flow, tk.r.flown);
+    t[0].flow_ok := true;
+  end;
+  for i := 0 to tk.r.nlabels - 1 do
+    t[0].labels_len[i] := tk.set(t[0].labels[i * TK.LABELLEN..(i + 1) * TK.LABELLEN - 1],
+                               TK.LABELLEN,
+                               tk.r.label[i * TK.LABELLEN..(i + 1) * TK.LABELLEN - 1],
+                               tk.r.labeln[i]);
+  t[0].labels_n := tk.r.nlabels;
+  for i := 0 to tk.r.nblocks - 1 do
+    t[0].blocked_by_len[i] := tk.set(t[0].blocked_by[i * TK.IDLEN..(i + 1) * TK.IDLEN - 1],
+                                   TK.IDLEN,
+                                   tk.r.block[i * TK.IDLEN..(i + 1) * TK.IDLEN - 1],
+                                   tk.r.blockn[i]);
+  t[0].blocked_by_n := tk.r.nblocks;
+  t[0].created_n := tk.set(t[0].created, TK.TSLEN, tk.r.created, tk.r.createdn);
+  t[0].updated_n := tk.set(t[0].updated, TK.TSLEN, tk.r.updated, tk.r.updatedn);
+
+  // The conversation and the record, oldest first. They come back on every read: a
+  // ticket without them is a form, and the caller should not need a second call to see
+  // what was said about the thing it just fetched.
+  for i := 0 to tk.r.ncomments - 1 do
+  begin
+    t[0].comments[i].at_n := tk.set(t[0].comments[i].at, TK.TSLEN,
+                                    tk.r.cat[i * TK.TSLEN..(i + 1) * TK.TSLEN - 1], tk.r.catn[i]);
+    t[0].comments[i].author_n := tk.set(t[0].comments[i].author, TK.WHOLEN,
+                                    tk.r.cwho[i * TK.WHOLEN..(i + 1) * TK.WHOLEN - 1], tk.r.cwhon[i]);
+    t[0].comments[i].text_n := tk.set(t[0].comments[i].text, TK.CTEXTLEN,
+                                    tk.r.ctxt[i * TK.CTEXTLEN..(i + 1) * TK.CTEXTLEN - 1], tk.r.ctxtn[i]);
+    t[0].comments[i].audience_n := tk.set(t[0].comments[i].audience, TK.AUDLEN,
+                                    tk.r.caud[i * TK.AUDLEN..(i + 1) * TK.AUDLEN - 1], tk.r.caudn[i]);
+    t[0].comments[i].audience_ok := true;
+  end;
+  t[0].comments_n := tk.r.ncomments;
+  for i := 0 to tk.r.nlogs - 1 do
+  begin
+    t[0].worklog[i].at_n := tk.set(t[0].worklog[i].at, TK.TSLEN,
+                                   tk.r.logat[i * TK.TSLEN..(i + 1) * TK.TSLEN - 1], tk.r.logatn[i]);
+    t[0].worklog[i].text_n := tk.set(t[0].worklog[i].text, TK.LOGLEN,
+                                   tk.r.log[i * TK.LOGLEN..(i + 1) * TK.LOGLEN - 1], tk.r.logn[i]);
+    t[0].worklog[i].audience_n := tk.set(t[0].worklog[i].audience, TK.AUDLEN,
+                                   tk.r.logaud[i * TK.AUDLEN..(i + 1) * TK.AUDLEN - 1], tk.r.logaudn[i]);
+    t[0].worklog[i].audience_ok := true;
+  end;
+  t[0].worklog_n := tk.r.nlogs;
+end;
+
+// ---- what counts as a valid value ------------------------------------------
+//
+// These say no early and by name. An agent that sends status "in progress" gets told
+// which five words exist, rather than a ticket that quietly holds a status nothing else
+// recognises -- the silent version is the expensive one, because it fails much later
+// somewhere unrelated.
+
+// Three, and no more. Every extra status is a decision someone has to make on every
+// ticket, and "blocked" is already said by blocked_by while "dropped" is a delete with
+// extra steps. Small enough that nobody has to look up what a status means.
+function tkt.okstatus(s: array of char; n: int): bool;
+begin
+  return tk.same(s, n, "todo", 4) or tk.same(s, n, "doing", 5)
+      or tk.same(s, n, "done", 4);
+end;
+
+function tkt.okpriority(s: array of char; n: int): bool;
+begin
+  if n <> 2 then return false;
+  if s[0] <> 'P' then return false;
+  return (s[1] >= '0') and (s[1] <= '3');
+end;
+
+// Four directions and no more. An open set here would turn into a second label field,
+// and the whole value of this one is that a reader knows what the four mean.
+function tkt.okflow(s: array of char; n: int): bool;
+begin
+  return tk.same(s, n, "h2a", 3) or tk.same(s, n, "a2h", 3)
+      or tk.same(s, n, "a2a", 3) or tk.same(s, n, "h2h", 3);
+end;
+
+function tkt.okkind(s: array of char; n: int): bool;
+begin
+  return tk.same(s, n, "bug", 3) or tk.same(s, n, "gap", 3)
+      or tk.same(s, n, "chore", 5) or tk.same(s, n, "research", 8)
+      or tk.same(s, n, "doc", 3);
+end;
+
+// Two, and closed the same way flow is: an agent that sends "verbose" or "internal"
+// gets told the field only has two values, rather than a ticket that quietly holds
+// something list_tickets' audience filter would never recognise as either register.
+function tkt.okaudience(s: array of char; n: int): bool;
+begin
+  return tk.same(s, n, "human", 5) or tk.same(s, n, "agent", 5);
+end;
+
+// ---- create ----------------------------------------------------------------
+
+function tool.create_ticket(a: array of CreateArgs; r: array of TicketOne): int;
+var row, i, n: int;
+    ts: array[0..TK.TSLEN - 1] of char;
+begin
+  if a[0].title_n = 0 then return tool.fail("title is required and cannot be empty");
+
+  // EVERYTHING that can be refused is checked BEFORE an id is taken. The id comes from a
+  // counter, so a refusal after taking one leaves a permanent hole in the numbering: the
+  // ticket that does not exist looks deleted rather than never-created, and an agent that
+  // retries after a rejected call burns an id every attempt. Found exactly that way --
+  // T-0044 is missing because a client retried a refused create.
+  if a[0].priority_ok and not a[0].priority_null and (a[0].priority_n > 0) then
+    if not tkt.okpriority(a[0].priority, a[0].priority_n) then
+      return tool.fail("priority must be P0, P1, P2 or P3");
+  if a[0].kind_ok and not a[0].kind_null and (a[0].kind_n > 0) then
+    if not tkt.okkind(a[0].kind, a[0].kind_n) then
+      return tool.fail("kind must be bug, gap, chore, research or doc");
+  if a[0].flow_ok and not a[0].flow_null and (a[0].flow_n > 0) then
+    if not tkt.okflow(a[0].flow, a[0].flow_n) then
+      return tool.fail("flow must be h2a, a2h, a2a or h2h");
+
+  if tk.n >= TK.MAXOPEN then return tool.fail("this build holds at most 2000 tickets");
+  tk.blank;
+  tk.r.seq := tk.nextseq;
+  tk.nextseq := tk.nextseq + 1;
+  tk.r.idn := tk.mkid(tk.r.id, tk.r.seq);
+
+  tk.r.titlen := tk.set(tk.r.title, TK.TITLELEN, a[0].title, a[0].title_n);
+  if a[0].body_ok and not a[0].body_null then
+    tk.r.bodyn := tk.set(tk.r.body, TK.BODYLEN, a[0].body, a[0].body_n);
+
+  // Defaults, stated here and nowhere else: a new ticket is todo and P2 until someone
+  // says otherwise.
+  tk.r.statusn := tk.set(tk.r.status, TK.SHORTLEN, "todo", 4);
+  tk.r.prion := tk.set(tk.r.prio, TK.SHORTLEN, "P2", 2);
+  tk.r.arean := tk.set(tk.r.area, TK.SHORTLEN, "general", 7);
+
+  if a[0].priority_ok and not a[0].priority_null then
+  begin
+    if not tkt.okpriority(a[0].priority, a[0].priority_n) then
+      return tool.fail("priority must be P0, P1, P2 or P3");
+    tk.r.prion := tk.set(tk.r.prio, TK.SHORTLEN, a[0].priority, a[0].priority_n);
+  end;
+  if a[0].area_ok and not a[0].area_null and (a[0].area_n > 0) then
+    tk.r.arean := tk.set(tk.r.area, TK.SHORTLEN, a[0].area, a[0].area_n);
+  if a[0].kind_ok and not a[0].kind_null and (a[0].kind_n > 0) then
+  begin
+    if not tkt.okkind(a[0].kind, a[0].kind_n) then
+      return tool.fail("kind must be bug, gap, chore, research or doc");
+    tk.r.kindn := tk.set(tk.r.kind, TK.SHORTLEN, a[0].kind, a[0].kind_n);
+  end;
+  if a[0].assignee_ok and not a[0].assignee_null then
+    tk.r.whon := tk.set(tk.r.who, TK.WHOLEN, a[0].assignee, a[0].assignee_n);
+  if a[0].milestone_ok and not a[0].milestone_null then
+    tk.r.msn := tk.set(tk.r.ms, TK.MSLEN, a[0].milestone, a[0].milestone_n);
+  if a[0].flow_ok and not a[0].flow_null and (a[0].flow_n > 0) then
+  begin
+    if not tkt.okflow(a[0].flow, a[0].flow_n) then
+      return tool.fail("flow must be h2a, a2h, a2a or h2h");
+    tk.r.flown := tk.set(tk.r.flow, TK.FLOWLEN, a[0].flow, a[0].flow_n);
+  end;
+  if a[0].labels_ok and not a[0].labels_null then
+  begin
+    n := a[0].labels_n;
+    if n > TK.LABELS then n := TK.LABELS;
+    for i := 0 to n - 1 do
+      tk.r.labeln[i] := tk.set(tk.r.label[i * TK.LABELLEN..(i + 1) * TK.LABELLEN - 1],
+                               TK.LABELLEN,
+                               a[0].labels[i * TK.LABELLEN..(i + 1) * TK.LABELLEN - 1],
+                               a[0].labels_len[i]);
+    tk.r.nlabels := n;
+  end;
+
+  // Created and updated start equal, so "has this been touched since?" is one comparison.
+  n := tk.now(ts);
+  tk.r.createdn := tk.set(tk.r.created, TK.TSLEN, ts, n);
+  tk.r.updatedn := tk.set(tk.r.updated, TK.TSLEN, ts, n);
+
+  if not tk.write(view(addr(tk.r), 1)) then return tool.fail("could not write the ticket file");
+  tk.all[tk.n] := tk.r;
+  tk.n := tk.n + 1;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+// ---- read ------------------------------------------------------------------
+
+function tool.get_ticket(a: array of IdArgs; r: array of TicketOne): int;
+var row: int;
+begin
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+// ---- update ----------------------------------------------------------------
+//
+// Only what was sent changes. Sending a field as null clears it where that is allowed,
+// which is why the check is `_ok and not _null` for a value and `_null` for a clear.
+
+function tool.update_ticket(a: array of UpdateArgs; r: array of TicketOne): int;
+var row, i, n: int;
+    ts: array[0..TK.TSLEN - 1] of char;
+begin
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+  tk.old := tk.r;          // the name on disk follows the title, so keep the old one
+
+  if a[0].title_ok and not a[0].title_null then
+  begin
+    if a[0].title_n = 0 then return tool.fail("title cannot be set to empty");
+    tk.r.titlen := tk.set(tk.r.title, TK.TITLELEN, a[0].title, a[0].title_n);
+  end;
+  if a[0].body_ok then
+  begin
+    if a[0].body_null then tk.r.bodyn := 0
+    else tk.r.bodyn := tk.set(tk.r.body, TK.BODYLEN, a[0].body, a[0].body_n);
+  end;
+  if a[0].status_ok and not a[0].status_null then
+  begin
+    if not tkt.okstatus(a[0].status, a[0].status_n) then
+      return tool.fail("status must be todo, doing or done");
+    tk.r.statusn := tk.set(tk.r.status, TK.SHORTLEN, a[0].status, a[0].status_n);
+  end;
+  if a[0].priority_ok and not a[0].priority_null then
+  begin
+    if not tkt.okpriority(a[0].priority, a[0].priority_n) then
+      return tool.fail("priority must be P0, P1, P2 or P3");
+    tk.r.prion := tk.set(tk.r.prio, TK.SHORTLEN, a[0].priority, a[0].priority_n);
+  end;
+  if a[0].area_ok and not a[0].area_null and (a[0].area_n > 0) then
+    tk.r.arean := tk.set(tk.r.area, TK.SHORTLEN, a[0].area, a[0].area_n);
+  if a[0].kind_ok then
+  begin
+    if a[0].kind_null then tk.r.kindn := 0
+    else
+    begin
+      if not tkt.okkind(a[0].kind, a[0].kind_n) then
+        return tool.fail("kind must be bug, gap, chore, research or doc");
+      tk.r.kindn := tk.set(tk.r.kind, TK.SHORTLEN, a[0].kind, a[0].kind_n);
+    end;
+  end;
+  if a[0].assignee_ok then
+  begin
+    if a[0].assignee_null then tk.r.whon := 0
+    else tk.r.whon := tk.set(tk.r.who, TK.WHOLEN, a[0].assignee, a[0].assignee_n);
+  end;
+  if a[0].milestone_ok then
+  begin
+    if a[0].milestone_null then tk.r.msn := 0
+    else tk.r.msn := tk.set(tk.r.ms, TK.MSLEN, a[0].milestone, a[0].milestone_n);
+  end;
+  if a[0].flow_ok then
+  begin
+    if a[0].flow_null then tk.r.flown := 0
+    else
+    begin
+      if not tkt.okflow(a[0].flow, a[0].flow_n) then
+        return tool.fail("flow must be h2a, a2h, a2a or h2h");
+      tk.r.flown := tk.set(tk.r.flow, TK.FLOWLEN, a[0].flow, a[0].flow_n);
+    end;
+  end;
+  if a[0].labels_ok then
+  begin
+    if a[0].labels_null then tk.r.nlabels := 0
+    else
+    begin
+      n := a[0].labels_n;
+      if n > TK.LABELS then n := TK.LABELS;
+      for i := 0 to n - 1 do
+        tk.r.labeln[i] := tk.set(tk.r.label[i * TK.LABELLEN..(i + 1) * TK.LABELLEN - 1],
+                                 TK.LABELLEN,
+                                 a[0].labels[i * TK.LABELLEN..(i + 1) * TK.LABELLEN - 1],
+                                 a[0].labels_len[i]);
+      tk.r.nlabels := n;
+    end;
+  end;
+  if a[0].blocked_by_ok then
+  begin
+    if a[0].blocked_by_null then tk.r.nblocks := 0
+    else
+    begin
+      n := a[0].blocked_by_n;
+      if n > TK.BLOCKS then n := TK.BLOCKS;
+      for i := 0 to n - 1 do
+        tk.r.blockn[i] := tk.set(tk.r.block[i * TK.IDLEN..(i + 1) * TK.IDLEN - 1],
+                                 TK.IDLEN,
+                                 a[0].blocked_by[i * TK.IDLEN..(i + 1) * TK.IDLEN - 1],
+                                 a[0].blocked_by_len[i]);
+      tk.r.nblocks := n;
+    end;
+  end;
+
+  n := tk.now(ts);
+  tk.r.updatedn := tk.set(tk.r.updated, TK.TSLEN, ts, n);
+
+  // A changed title means a changed filename: write the new one, then remove the old.
+  // In that order, so a failure leaves the ticket present rather than gone.
+  if not tk.write(view(addr(tk.r), 1)) then return tool.fail("could not write the ticket file");
+  if not tk.same(tk.old.title[0..tk.old.titlen - 1], tk.old.titlen,
+                 tk.r.title[0..tk.r.titlen - 1], tk.r.titlen) then
+    tk.dropped := tk.remove(view(addr(tk.old), 1));
+  tk.all[row] := tk.r;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+// ---- delete ----------------------------------------------------------------
+//
+// Returns the ticket as it was, so a caller that deleted the wrong one can put it back
+// without having read it first.
+
+function tool.delete_ticket(a: array of IdArgs; r: array of TicketOne): int;
+var row: int;
+begin
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+  tkt.out(view(addr(r[0].ticket), 1));      // the ticket as it was, so it can be put back
+  if not tk.remove(view(addr(tk.r), 1)) then return tool.fail("could not delete the file");
+  // close the gap in the list; order is not meaningful here, list_tickets sorts
+  tk.all[row] := tk.all[tk.n - 1];
+  tk.n := tk.n - 1;
+  return 0;
+end;
+
+// ---- saying something, and recording something -----------------------------
+//
+// Both append and never edit. That is the whole design: a conversation you can rewrite
+// afterwards is not a record of what happened, and a work log you can tidy up is not
+// evidence. If something was wrong, the next line says so.
+
+function tool.add_comment(a: array of CommentArgs; r: array of TicketOne): int;
+var row, w, n: int;
+    ts: array[0..TK.TSLEN - 1] of char;
+begin
+  if a[0].text_n = 0 then return tool.fail("a comment needs something in it");
+  if a[0].audience_ok and not a[0].audience_null and (a[0].audience_n > 0) then
+    if not tkt.okaudience(a[0].audience, a[0].audience_n) then
+      return tool.fail("audience must be human or agent");
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+  if tk.r.ncomments >= TK.COMMENTS then
+    return tool.fail("this build keeps at most 32 comments on a ticket");
+
+  w := tk.r.ncomments;
+  n := tk.now(ts);
+  tk.r.catn[w] := tk.set(tk.r.cat[w * TK.TSLEN..(w + 1) * TK.TSLEN - 1], TK.TSLEN, ts, n);
+  tk.r.cwhon[w] := tk.set(tk.r.cwho[w * TK.WHOLEN..(w + 1) * TK.WHOLEN - 1],
+                          TK.WHOLEN, a[0].author, a[0].author_n);
+  tk.r.ctxtn[w] := tk.set(tk.r.ctxt[w * TK.CTEXTLEN..(w + 1) * TK.CTEXTLEN - 1],
+                          TK.CTEXTLEN, a[0].text, a[0].text_n);
+  if a[0].audience_ok and not a[0].audience_null and (a[0].audience_n > 0) then
+    tk.r.caudn[w] := tk.set(tk.r.caud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                            TK.AUDLEN, a[0].audience, a[0].audience_n)
+  else
+    tk.r.caudn[w] := tk.set(tk.r.caud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                            TK.AUDLEN, "human", 5);
+  tk.r.ncomments := w + 1;
+
+  // A comment changes the ticket, so `updated` moves: "has anything happened here?" is
+  // one comparison rather than a scan of the conversation.
+  tk.r.updatedn := tk.set(tk.r.updated, TK.TSLEN, ts, n);
+
+  if not tk.write(view(addr(tk.r), 1)) then return tool.fail("could not write the ticket file");
+  tk.all[row] := tk.r;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+// ---- claiming ---------------------------------------------------------------
+//
+// The conditional write update_ticket cannot express: check who holds the ticket and
+// set assignee + status in the SAME call, with no gap in between for a second agent to
+// read the old value through. Idempotent for the current holder on purpose -- an agent
+// retrying a timed-out call must not be told it lost a race to itself.
+
+function tool.claim_ticket(a: array of ClaimArgs; r: array of TicketOne): int;
+var row: int;
+begin
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+
+  if (tk.r.whon > 0) and not tk.same(tk.r.who[0..tk.r.whon - 1], tk.r.whon, a[0].who, a[0].who_n) then
+    return tool.fail("already claimed");
+
+  tk.r.whon := tk.set(tk.r.who, TK.WHOLEN, a[0].who, a[0].who_n);
+  tk.r.statusn := tk.set(tk.r.status, TK.SHORTLEN, "doing", 5);
+  tk.r.updatedn := tk.now(tk.r.updated);
+
+  if not tk.write(view(addr(tk.r), 1)) then return tool.fail("could not write the ticket file");
+  tk.all[row] := tk.r;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+// A dead or timed-out agent takes the ticket out of the backlog for everyone until this
+// runs: it is the only way back to todo once claim_ticket has refused every other caller.
+function tool.release_ticket(a: array of IdArgs; r: array of TicketOne): int;
+var row: int;
+begin
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+
+  tk.r.whon := 0;
+  tk.r.statusn := tk.set(tk.r.status, TK.SHORTLEN, "todo", 4);
+  tk.r.updatedn := tk.now(tk.r.updated);
+
+  if not tk.write(view(addr(tk.r), 1)) then return tool.fail("could not write the ticket file");
+  tk.all[row] := tk.r;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+function tool.log_work(a: array of LogArgs; r: array of TicketOne): int;
+var row, w, n: int;
+    ts: array[0..TK.TSLEN - 1] of char;
+begin
+  if a[0].text_n = 0 then return tool.fail("a work log line needs something in it");
+  if a[0].audience_ok and not a[0].audience_null and (a[0].audience_n > 0) then
+    if not tkt.okaudience(a[0].audience, a[0].audience_n) then
+      return tool.fail("audience must be human or agent");
+  row := tk.find(a[0].id, a[0].id_n);
+  if row < 0 then return tool.fail("no ticket with that id");
+  tk.r := tk.all[row];
+  if tk.r.nlogs >= TK.LOGS then
+    return tool.fail("this build keeps at most 32 work log lines on a ticket");
+
+  // The date, without the time, is what the file has always shown on the "- " line --
+  // "2026-09-14 - measured X" reads the way a person writes it. It now lives in its own
+  // field (logat) rather than as a prefix baked into the text, the same shape a comment
+  // already had; tk.write puts the "<date> - " back in front when it composes the line.
+  n := tk.now(ts);
+  w := tk.r.nlogs;
+  tk.r.logatn[w] := tk.set(tk.r.logat[w * TK.TSLEN..(w + 1) * TK.TSLEN - 1], TK.TSLEN, ts, 10);
+  tk.r.logn[w] := tk.set(tk.r.log[w * TK.LOGLEN..(w + 1) * TK.LOGLEN - 1],
+                         TK.LOGLEN, a[0].text, a[0].text_n);
+  if a[0].audience_ok and not a[0].audience_null and (a[0].audience_n > 0) then
+    tk.r.logaudn[w] := tk.set(tk.r.logaud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                              TK.AUDLEN, a[0].audience, a[0].audience_n)
+  else
+    tk.r.logaudn[w] := tk.set(tk.r.logaud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                              TK.AUDLEN, "human", 5);
+  tk.r.nlogs := w + 1;
+  tk.r.updatedn := tk.set(tk.r.updated, TK.TSLEN, ts, n);
+
+  if not tk.write(view(addr(tk.r), 1)) then return tool.fail("could not write the ticket file");
+  tk.all[row] := tk.r;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;

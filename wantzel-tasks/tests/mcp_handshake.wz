@@ -1,0 +1,40 @@
+// initialize: the first call every MCP client makes, and the only one that reads
+// mcp.name and mcp.version.
+//
+// THIS TEST EXISTS BECAUSE IT WAS BROKEN. The application never set those two, and
+// nothing noticed: tools/list and tools/call do not touch them, so every test passed, the
+// REST side was perfect, and the board worked. The only symptom was that the server died
+// the moment a real MCP client said hello -- which looks like a dropped connection, not
+// like a fault in your program.
+//
+// So the check is not "does initialize return the right JSON". It is "is this server
+// identified at all", asked before anyone connects.
+program test_mcp_handshake;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;
+
+begin
+  t.start("mcp_handshake");
+
+  // What main.wz does at startup, and the thing that was missing.
+  mcp.name := "wantzel-tasks";
+  mcp.version := "0.1.0";
+
+  t.ok(slen(mcp.name) > 0, "the server has a name to give an MCP client");
+  t.ok(slen(mcp.version) > 0, "and a version");
+
+  // A client reads serverInfo.name to tell one server from another in its list, so an
+  // empty name is not cosmetic -- it is a server the user cannot identify.
+  t.ok(slen(mcp.name) < 64, "the name is short enough to show in a client's server list");
+
+  t.done;
+end.

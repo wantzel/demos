@@ -1,0 +1,96 @@
+// update_ticket: only what you send changes, and null is not the same as absent.
+//
+// This is the test behind the decision not to have a separate patch call. The generated
+// parser gives every optional argument two flags -- `_ok` (it arrived) and `_null` (it
+// arrived as null) -- and that is enough to tell "leave it alone" from "clear it".
+program test_update;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;
+
+begin
+  t.start("update");
+
+  // A ticket with something in every field we are about to leave alone.
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Original title");
+  t.ca[0].body_n := io.push(t.ca[0].body, 0, "The body explains why.");
+  t.ca[0].body_ok := true;
+  t.ca[0].area_n := io.push(t.ca[0].area, 0, "api");
+  t.ca[0].area_ok := true;
+  t.ca[0].kind_n := io.push(t.ca[0].kind, 0, "bug");
+  t.ca[0].kind_ok := true;
+  t.ca[0].assignee_n := io.push(t.ca[0].assignee, 0, "floris");
+  t.ca[0].assignee_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.eqint(t.rc, 0, "the ticket under test is created");
+
+  // ---- send one field: the others keep their value -------------------------
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := io.push(t.ua[0].id, 0, "T-0001");
+  t.ua[0].status_n := io.push(t.ua[0].status, 0, "doing");
+  t.ua[0].status_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "updating one field is accepted");
+  t.eqtext(t.one[0].ticket.status, t.one[0].ticket.status_n, "doing", "status changed");
+  t.eqtext(t.one[0].ticket.title, t.one[0].ticket.title_n, "Original title", "title untouched");
+  t.eqtext(t.one[0].ticket.body, t.one[0].ticket.body_n, "The body explains why.", "body untouched");
+  t.eqtext(t.one[0].ticket.area, t.one[0].ticket.area_n, "api", "area untouched");
+  t.eqtext(t.one[0].ticket.assignee, t.one[0].ticket.assignee_n, "floris", "assignee untouched");
+
+  // ---- null clears, and that is a different request ------------------------
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := io.push(t.ua[0].id, 0, "T-0001");
+  t.ua[0].assignee_ok := true;
+  t.ua[0].assignee_null := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "sending assignee as null is accepted");
+  t.ok(not t.one[0].ticket.assignee_ok, "and unassigns the ticket");
+  t.eqtext(t.one[0].ticket.status, t.one[0].ticket.status_n, "doing", "while status still stands");
+
+  // ---- what it refuses ------------------------------------------------------
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := io.push(t.ua[0].id, 0, "T-0001");
+  t.ua[0].status_n := io.push(t.ua[0].status, 0, "in progress");
+  t.ua[0].status_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.ok(t.rc <> 0, "\"in progress\" is not a status and is refused by name");
+
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := io.push(t.ua[0].id, 0, "T-9999");
+  t.ua[0].status_n := io.push(t.ua[0].status, 0, "done");
+  t.ua[0].status_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.ok(t.rc <> 0, "an id that does not exist is refused");
+
+  // ---- a changed title renames the file, and the ticket survives it ---------
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := io.push(t.ua[0].id, 0, "T-0001");
+  t.ua[0].title_n := io.push(t.ua[0].title, 0, "A better title");
+  t.ua[0].title_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "the title can be changed");
+  t.eqtext(t.one[0].ticket.title, t.one[0].ticket.title_n, "A better title", "and the new title comes back");
+
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := io.push(t.ia[0].id, 0, "T-0001");
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "and the ticket is still findable by id after the rename");
+
+  t.done;
+end.

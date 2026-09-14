@@ -1,0 +1,53 @@
+// ui.wz -- the page, assembled and served.
+//
+// The frontend itself is NOT here. It is three ordinary files under web/ -- app.css,
+// app.html, app.js -- which an editor highlights and a browser's dev tools recognise.
+// tools/wzgen.wz compiles them into src/assets.wz at build time, so they end up inside
+// the binary: the application is still one file you copy, with nothing to install and
+// nothing to read from disk at run time.
+//
+// That is the whole reason this file is short. Markup belongs in .html, styles in .css,
+// behaviour in .js; what belongs in a Wantzel file is the decision about what to serve.
+//
+// EVERYTHING GOES THROUGH POST /api/<tool>. Dragging a card calls update_ticket; there is
+// no private route for the page. If the board can do it, so can your agent, and the other
+// way round. That is worth more than any framework would buy.
+//
+// Two views of the same tickets, not two features: a kanban board for moving work along,
+// and a list for reading a backlog. One toggle.
+
+include "assets.wz";
+
+// The API reference at /docs. It renders itself from /tools.json -- the same table the
+// MCP client reads -- so it cannot drift from the declaration, and there is no second
+// description of the API to keep in step.
+procedure ui.docs;
+begin
+  http.add("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+  http.add("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+  http.add("<title>wantzel-tasks API</title>");
+  http.add("<style>");
+  asset.css;
+  asset.docscss;
+  http.add("</style></head><body>");
+  asset.docshtml;
+  http.add("<script>");
+  asset.docsjs;
+  http.add("</script></body></html>");
+  http.finish(200, "text/html; charset=utf-8");
+end;
+
+procedure ui.page;
+begin
+  http.add("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+  http.add("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+  http.add("<title>wantzel-tasks</title>");
+  http.add("<style>");
+  asset.css;
+  http.add("</style></head><body>");
+  asset.html;
+  http.add("<script>");
+  asset.js;
+  http.add("</script></body></html>");
+  http.finish(200, "text/html; charset=utf-8");
+end;

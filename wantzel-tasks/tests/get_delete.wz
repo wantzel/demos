@@ -1,0 +1,79 @@
+// get_ticket and delete_ticket: reading and removing by id, and what happens twice.
+program test_get_delete;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+begin
+  t.start("get_delete");
+
+  // ---- get by id -------------------------------------------------------------
+  t.make("A ticket to fetch");
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "get_ticket finds a ticket that exists");
+  t.eqtext(t.one[0].ticket.title, t.one[0].ticket.title_n, "A ticket to fetch",
+           "and returns the same title it was created with");
+
+  // A missing id is refused, not answered with an empty or default ticket -- silence
+  // there would be indistinguishable from a ticket that really has no title.
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := io.push(t.ia[0].id, 0, "T-9999");
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.ok(t.rc <> 0, "get_ticket refuses an id that does not exist");
+
+  // ---- delete returns the ticket as it was ------------------------------------
+  t.make("A ticket to delete");
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.delete_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "delete_ticket accepts an id that exists");
+  t.eqtext(t.one[0].ticket.title, t.one[0].ticket.title_n, "A ticket to delete",
+           "and hands back the ticket as it was, so it could be put back unread");
+
+  // ---- after deleting, it is really gone --------------------------------------
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.ok(t.rc <> 0, "a deleted ticket can no longer be fetched");
+
+  // ---- deleting twice is refused the second time -------------------------------
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.delete_ticket(t.ia, t.one);
+  t.ok(t.rc <> 0, "deleting the same id a second time is refused, not silently accepted");
+
+  // ---- deleting one ticket leaves another untouched ----------------------------
+  // Guards against a delete that closes the gap in tk.all by copying the wrong row
+  // (see tool.delete_ticket: tk.all[row] := tk.all[tk.n - 1]).
+  t.make("Keep me A");
+  t.make("Keep me B");
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);   // deletes "Keep me B"
+  TicketOne.clear(t.one);
+  t.rc := tool.delete_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "the second keeper can be deleted");
+  ListArgs.clear(t.la);
+  TicketList.clear(t.lst);
+  t.rc := tool.list_tickets(t.la, t.lst);
+  t.eqint(t.rc, 0, "listing after a delete is still accepted");
+  // "A ticket to fetch" and "Keep me A" survive; "A ticket to delete" and "Keep me B"
+  // were both deleted above.
+  t.eqint(t.lst[0].matched, 2, "only the deleted tickets are gone, the rest remain");
+
+  t.done;
+end.

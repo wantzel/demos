@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. The UI: real files, compiled into the binary</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#1a1815;--muted:#5e5850;--rule:#e3ded5;
+--code-bg:#f2efe9;--accent:#8a4218;--accent-soft:#f0e4da;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#15140f;--fg:#ecebe6;--muted:#a09a8f;
+--rule:#2e2b25;--code-bg:#1e1c18;--accent:#e0a473;--accent-soft:#2a211a;--card:#1e1c18}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+.wrap{max-width:44rem;margin:0 auto;padding:0 1.3rem 4rem}
+a{color:var(--accent)}
+nav{border-bottom:1px solid var(--rule);margin-bottom:2.4rem}
+nav .wrap{padding-top:1.1rem;padding-bottom:1.1rem;display:flex;gap:1rem;
+align-items:baseline;font:.9rem ui-sans-serif,system-ui,sans-serif}
+nav a{text-decoration:none;font-weight:600}
+nav .sep{color:var(--muted)}
+h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
+h1{font-size:2rem;margin:1.6rem 0 1.4rem}
+h2{font-size:1.4rem;margin:3rem 0 .8rem}
+h3{font-size:1.05rem;margin:1.9rem 0 .5rem}
+p{margin:0 0 1.1rem}
+ul,ol{margin:0 0 1.2rem;padding-left:1.3rem}li{margin-bottom:.4rem}
+code{font:.87em ui-monospace,Menlo,monospace;background:var(--code-bg);
+padding:.1em .35em;border-radius:5px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.3rem}
+pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+blockquote{border-left:3px solid var(--accent);background:var(--accent-soft);
+border-radius:0 10px 10px 0;padding:.9rem 1.1rem;margin:0 0 1.3rem}
+blockquote p:last-child{margin:0}
+table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
+font:.92rem ui-sans-serif,system-ui,sans-serif}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);
+vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.8rem;letter-spacing:.04em;
+text-transform:uppercase}
+hr{border:0;border-top:1px solid var(--rule);margin:2.4rem 0}
+img{max-width:100%;border:1px solid var(--rule);border-radius:12px}
+footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;
+color:var(--muted);font-size:.9rem}
+@media(max-width:620px){body{font-size:16px}h1{font-size:1.6rem}.wrap{padding:0 1rem 3rem}}
+</style>
+</head>
+<body>
+<nav><div class="wrap"><a href="index.html">Overview</a><span class="sep">/</span><span class="sep">4. The UI: real files, compiled into the binary</span></div></nav>
+<div class="wrap">
+<h1>4. The UI: real files, compiled into the binary</h1>
+<p>The page is <strong>not</strong> written in Wantzel. It is three ordinary files:</p>
+<pre><code>web/app.css     styles
+web/app.html    markup
+web/app.js      behaviour</code></pre>
+<p>An editor highlights them, the browser&#x27;s dev tools recognise them, and changing a CSS rule is changing a CSS rule.</p>
+<h2>The first version, and why it was wrong</h2>
+<p>They started out as string constants inside <code>src/ui.wz</code> — 268 calls to <code>http.add</code>, each with its quotes escaped:</p>
+<pre><code>http.add(&quot;&lt;button id=\&quot;vl\&quot; onclick=\&quot;setview(&#x27;list&#x27;)\&quot;&gt;List&lt;/button&gt;&quot;);</code></pre>
+<p>That works, and it is how web applications were written twenty years ago. The problem is not that it is old-fashioned; it is that <strong>you cannot read it</strong>. No highlighting, no formatter, and every change to the markup means counting backslashes. For a project whose entire argument is &quot;read this and see how clean it can be&quot;, the frontend was the part that undermined the claim.</p>
+<h2>What could not change</h2>
+<p>One binary, no dependencies, nothing to install. Serving <code>web/</code> from disk at run time would break exactly that — the binary would stop working the moment someone moved it without its directory.</p>
+<p>So the files are read at <strong>build</strong> time, not run time:</p>
+<pre><code>web/app.css  -&gt;
+web/app.html -&gt;   tools/wzgen.wz   -&gt;   src/assets.wz   -&gt;   linked into the binary
+web/app.js   -&gt;</code></pre>
+<p><code>tools/wzgen.wz</code> is a Wantzel program that turns each file into a procedure of string constants, breaking the output into readable lines. <code>wztrun</code> runs it whenever a file under <code>web/</code> is newer than the generated source, and <code>src/assets.wz</code> is committed so a fresh clone builds with nothing but the compiler.</p>
+<h2>What is left in ui.wz</h2>
+<p>The whole file is now the page assembly — which is the only part that was ever a program:</p>
+<pre><code>procedure ui.page;
+begin
+  http.add(&quot;&lt;!doctype html&gt;&lt;html lang=\&quot;en\&quot;&gt;&lt;head&gt;&lt;meta charset=\&quot;utf-8\&quot;&gt;&quot;);
+  http.add(&quot;&lt;title&gt;wantzel-tasks&lt;/title&gt;&quot;);
+  http.add(&quot;&lt;style&gt;&quot;);
+  asset.css;
+  http.add(&quot;&lt;/style&gt;&lt;/head&gt;&lt;body&gt;&quot;);
+  asset.html;
+  http.add(&quot;&lt;script&gt;&quot;);
+  asset.js;
+  http.add(&quot;&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;&quot;);
+  http.finish(200, &quot;text/html; charset=utf-8&quot;);
+end;</code></pre>
+<p>351 lines became 34. Nothing about the served page changed.</p>
+<h2>Why not a template language</h2>
+<p>Because then the demo would be showing you a template language instead of showing you Wantzel. The page is static: it ships no data. Everything it displays arrives over the same <code>POST /api/&lt;tool&gt;</code> an agent calls, after the page has loaded. There is nothing to interpolate, so there is nothing for a template engine to do.</p>
+<p><code>ui.css</code> writes a <code>&lt;style&gt;</code> block, <code>ui.body</code> the markup for the header, the filter bar, the board and list containers, and the edit panel, and <code>ui.script</code> a <code>&lt;script&gt;</code> block — plain JavaScript, no framework, talking to the server through <code>fetch</code>. That is the whole build step: compile the Wantzel program, and the page exists.</p>
+<h2>Board and list are the same tickets</h2>
+<p>The toggle at the top switches <code>view</code> between <code>&#x27;board&#x27;</code> and <code>&#x27;list&#x27;</code>; both read from the same <code>all</code> array, fetched once with a single call to <code>list_tickets</code>:</p>
+<pre><code>async function load(){
+  const j = await api(&#x27;list_tickets&#x27;, {limit: 200});
+  all = j.tickets;
+  ...
+}</code></pre>
+<p><code>drawBoard</code> groups <code>all</code> into three columns by <code>status</code> (<code>todo</code>, <code>doing</code>, <code>done</code>) and renders a card per ticket; <code>drawList</code> renders the same array as table rows. Filtering by search text, milestone, area, priority or kind happens client-side, in <code>match(t)</code>, against the tickets already in memory — not as separate server calls per filter. At the sizes this format is built for, filtering 200 already-loaded tickets in the browser is instant, and typing in the search box does not need to hit the server on every keystroke.</p>
+<h2>Every action is a tool call</h2>
+<p><code>api(tool, args)</code> is the one function the whole page uses to talk to the server:</p>
+<pre><code>async function api(tool,args){
+  const r = await fetch(&#x27;/api/&#x27;+tool, {method:&#x27;POST&#x27;,
+    headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;}, body:JSON.stringify(args||{})});
+  const j = await r.json();
+  if(j.detail){alert(j.detail);throw new Error(j.detail)}
+  return j;
+}</code></pre>
+<p>That is <code>POST /api/&lt;tool&gt;</code> — the same REST route described in <a href="02-one-declaration-three-interfaces.html">2. One declaration, three interfaces</a>, reached with the browser&#x27;s own <code>fetch</code>. Creating a ticket calls <code>create_ticket</code>. Adding a comment calls <code>add_comment</code>. Recording a line in the work log calls <code>log_work</code>. And dragging a card from <code>todo</code> to <code>doing</code> calls <code>update_ticket</code> with the new status, nothing more:</p>
+<pre><code>async function move(id,status){
+  const t=all.find(x=&gt;x.id===id); if(!t||t.status===status) return;
+  t.status=status; draw();
+  await api(&#x27;update_ticket&#x27;,{id:id,status:status}); await load();
+}</code></pre>
+<p>The card moves in the browser immediately, for responsiveness, and the same <code>update_ticket</code> call an MCP agent would make follows right after; <code>load()</code> afterwards re-reads the tickets from the server, so if the server disagreed — a validation failure, a stale id — the page corrects itself on the next draw rather than staying wrong.</p>
+<h2>No private route</h2>
+<p>This is the point stated in the README, and it is visible directly in the code: search <code>ui.wz</code> for anything that is not <code>POST /api/&lt;tool&gt;</code>, and there is nothing. The page has no endpoint of its own for creating, updating or deleting a ticket — it is a client of the exact same eight tools an MCP agent calls, over the exact same REST route. If the board can move a card from <code>todo</code> to <code>doing</code>, that is because <code>update_ticket</code> allows it, and an agent calling <code>update_ticket</code> directly can do anything the board can. There is no special path where the UI is allowed something the API is not, because the UI has no path the API doesn&#x27;t already expose.</p>
+<p>Next: <a href="05-testing.html">5. Testing</a>.</p>
+<footer>A demo of <a href="https://wantzel.com">Wantzel</a> &middot; </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,140 @@
+#!/bin/sh
+# wztrun -- build wantzel-tasks, and run it unless told otherwise.
+#
+#   ./wztrun                 build, then serve on http://127.0.0.1:7777
+#   ./wztrun --port 8080     the same on another port
+#   ./wztrun --build         build only
+#   ./wztrun --stdio         build, then speak MCP over stdin/stdout
+#   ./wztrun --tunnel        build, serve, and put it on a public HTTPS address
+#
+# The frontend is web/app.css, web/app.html and web/app.js -- real files, compiled into
+# the binary by tools/wzgen.wz as the first build step. Edit them and run this again.
+#
+# ALL THREE INTERFACES SHARE ONE PORT. There is no separate API port and no separate
+# MCP port, because they are not separate servers -- they are three doors into the same
+# tool table, generated from the same declaration:
+#
+#   GET  http://127.0.0.1:7777/               the board, in a browser
+#   POST http://127.0.0.1:7777/api/<tool>     REST, arguments and result as JSON
+#   POST http://127.0.0.1:7777/mcp            MCP, for Claude, Codex, Cursor
+#   GET  http://127.0.0.1:7777/tools.json     what exists, with a schema per tool
+#
+# --stdio is the same MCP, over a pipe instead of a socket: that is what an agent on
+# the same machine uses, and then there is no port at all.
+#
+# The compiler is looked for next to this project and then on PATH; set WANTZEL to
+# point somewhere else. There is nothing else to install: one binary in, one binary out.
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [ -z "$WANTZEL" ]; then
+  for c in "$here/../../wantzel/bin/wantzel" "$here/../wantzel/bin/wantzel" "$(command -v wantzel || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then WANTZEL="$c"; break; fi
+  done
+fi
+if [ -z "$WANTZEL" ] || [ ! -x "$WANTZEL" ]; then
+  echo "wztrun: no wantzel compiler found." >&2
+  echo "  get one from https://github.com/wantzel/wantzel, then either put it on PATH" >&2
+  echo "  or point WANTZEL at it:  WANTZEL=/path/to/wantzel ./wztrun" >&2
+  exit 2
+fi
+
+# Which compiler this was built and tested against. Wantzel is before 1.0 and the language
+# is still moving, so a demo that does not say which compiler it needs is a demo that will
+# one day fail to build for a reason nobody can see. A newer compiler is only a warning --
+# it usually works, and you should find out by trying rather than by being refused.
+WANTZEL_TESTED=0.1.2
+have=$("$WANTZEL" --version 2>/dev/null | awk '{print $2}')
+if [ -n "$have" ] && [ "$have" != "$WANTZEL_TESTED" ]; then
+  echo "note: built and tested with Wantzel $WANTZEL_TESTED, you have $have" >&2
+fi
+
+mkdir -p "$here/bin"
+
+# The frontend lives in web/ as real .css, .html and .js files, and is compiled INTO the
+# binary rather than read from disk -- otherwise the binary would stop working the moment
+# it was moved without its directory. tools/wzgen.wz is that step, and it is itself a
+# Wantzel program. src/assets.wz is committed, so a clone builds with only the compiler;
+# this regenerates it whenever a web/ file is newer.
+if [ ! -x "$here/bin/wzgen" ] || [ "$here/tools/wzgen.wz" -nt "$here/bin/wzgen" ]; then
+  "$WANTZEL" "$here/tools/wzgen.wz" "$here/bin/wzgen"
+fi
+for f in "$here"/web/*; do
+  if [ "$f" -nt "$here/src/assets.wz" ]; then
+    ( cd "$here" && ./bin/wzgen )
+    break
+  fi
+done
+
+# A running server holds the binary open, and the compiler then reports "cannot create
+# the output file" -- true, and pointing at the wrong thing. Stop the old one first.
+if [ -x "$here/bin/wantzel-tasks" ]; then
+  pkill -f "$here/bin/wantzel-tasks" 2>/dev/null && sleep 0.3
+fi
+printf 'building ... '
+start=$(date +%s%N)
+"$WANTZEL" "$here/src/main.wz" "$here/bin/wantzel-tasks"
+end=$(date +%s%N)
+printf '%s ms, %s\n' "$(( (end - start) / 1000000 ))" "$(ls -lh "$here/bin/wantzel-tasks" | awk '{print $5}')"
+
+# A public address, for an agent that is not on this machine. This exists because the
+# alternative -- a paragraph in the documentation -- sends people to a download page and
+# then to a "command not found", which is where most of them stop. Fetching a 40 MB binary
+# is worth asking about, so it asks.
+if [ "$1" = "--tunnel" ]; then
+  shift
+  cfd=$(command -v cloudflared || true)
+  [ -z "$cfd" ] && [ -x "$HOME/bin/cloudflared" ] && cfd="$HOME/bin/cloudflared"
+  if [ -z "$cfd" ]; then
+    case "$(uname -m)" in
+      x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;;
+      *) echo "wztrun: no cloudflared build for $(uname -m); install it yourself" >&2; exit 2 ;;
+    esac
+    echo "wztrun: cloudflared is not installed. It is one binary (~40 MB) from Cloudflare,"
+    echo "        and it is what gives you a public HTTPS address for this server."
+    printf '        Download it to ~/bin? [y/N] '
+    read -r yn
+    case "$yn" in [yY]*) ;; *) echo "wztrun: nothing downloaded."; exit 1 ;; esac
+    mkdir -p "$HOME/bin"
+    curl -fsSL -o "$HOME/bin/cloudflared" \
+      "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch" \
+      || { echo "wztrun: download failed" >&2; exit 2; }
+    chmod +x "$HOME/bin/cloudflared"
+    cfd="$HOME/bin/cloudflared"
+    echo "wztrun: installed $("$cfd" --version)"
+  fi
+
+  port=7777
+  [ "$1" = "--port" ] && { port=$2; shift 2; }
+  "$here/bin/wantzel-tasks" --data "$here/data" --port "$port" &
+  srv=$!
+  trap 'kill $srv 2>/dev/null' EXIT INT TERM
+  echo
+  echo "wztrun: opening a public address ..."
+  # cloudflared logs about thirty lines of startup detail around the one line anybody
+  # wants. Keep the address and the errors; drop the rest. --loglevel warn silences the
+  # informational half, and the grep keeps the banner line that carries the URL.
+  # The URL only appears at info level, so the level stays default and the filtering is
+  # done here: keep the address and real failures, drop the startup detail and the two
+  # ICMP warnings that every run produces and nobody can act on.
+  "$cfd" tunnel --url "http://127.0.0.1:$port" 2>&1 \
+    | grep --line-buffered -E 'trycloudflare\.com|ERR ' \
+    | grep --line-buffered -vE 'ICMP|ping_group_range|Requesting new quick' \
+    | sed -u -E 's/.*(https:\/\/[a-z0-9-]+\.trycloudflare\.com).*/\n  \1\n/' &
+  cft=$!
+  sleep 1
+  echo "        the address appears below; it is new every run, so it is for a demo,"
+  echo "        not for a connector you want to keep."
+  wait $cft
+fi
+
+case "$1" in
+  --build) exit 0 ;;
+  --stdio) shift; exec "$here/bin/wantzel-tasks" --data "$here/data" --stdio "$@" ;;
+esac
+
+port=7777
+[ "$1" = "--port" ] && { port=$2; shift 2; }
+# The banner is the server's own: it is what you see however you start it, and printing
+# a second copy here is the first thing a new reader notices going wrong.
+exec "$here/bin/wantzel-tasks" --data "$here/data" --port "$port" "$@"

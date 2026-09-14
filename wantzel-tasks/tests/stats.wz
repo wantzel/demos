@@ -1,0 +1,117 @@
+// ticket_stats: counts per status, total is their sum, p0 counts only OPEN P0 tickets,
+// and both area and milestone narrow the count the same way list_tickets does.
+program test_stats;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+// Create a ticket, then move it straight to the given status (skipping "todo" is fine:
+// update_ticket accepts any of the three statuses regardless of the current one).
+procedure make_at(title, status: str; area_ok: bool; area: str);
+begin
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, title);
+  if area_ok then
+  begin
+    t.ca[0].area_n := io.push(t.ca[0].area, 0, area);
+    t.ca[0].area_ok := true;
+  end;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc = 0, "the fixture ticket is created");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.one[0].ticket.id, t.one[0].ticket.id_n);
+  t.ua[0].status_n := io.push(t.ua[0].status, 0, status);
+  t.ua[0].status_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.ok(t.rc = 0, "moving the fixture ticket to its status is accepted");
+end;
+
+begin
+  t.start("stats");
+
+  // One of each status, plus a second "todo" so counts are not all 1 by coincidence.
+  make_at("Todo one", "todo", false, "");
+  make_at("Todo two", "todo", false, "");
+  make_at("Doing one", "doing", false, "");
+  make_at("Done one", "done", false, "");
+
+  ListArgs.clear(t.la);   // unused here, just to keep t.la/t.lst distinct from t.sa/t.st
+  StatsArgs.clear(t.sa);
+  Stats.clear(t.st);
+  t.rc := tool.ticket_stats(t.sa, t.st);
+  t.eqint(t.rc, 0, "ticket_stats with no filter is accepted");
+  t.eqint(t.st[0].todo, 2, "two tickets are counted as todo");
+  t.eqint(t.st[0].doing, 1, "one ticket is counted as doing");
+  t.eqint(t.st[0].done, 1, "one ticket is counted as done");
+  t.eqint(t.st[0].total, 4, "total is the sum of every status, not just the open ones");
+
+  // ---- p0 counts only OPEN P0 tickets: todo or doing, never done ------------
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Open emergency");
+  t.ca[0].priority_n := io.push(t.ca[0].priority, 0, "P0");
+  t.ca[0].priority_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc = 0, "a P0 ticket is created");
+
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Finished emergency");
+  t.ca[0].priority_n := io.push(t.ca[0].priority, 0, "P0");
+  t.ca[0].priority_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc = 0, "a second P0 ticket is created, about to be closed");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.one[0].ticket.id, t.one[0].ticket.id_n);
+  t.ua[0].status_n := io.push(t.ua[0].status, 0, "done");
+  t.ua[0].status_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.ok(t.rc = 0, "closing the second P0 ticket is accepted");
+
+  StatsArgs.clear(t.sa);
+  Stats.clear(t.st);
+  t.rc := tool.ticket_stats(t.sa, t.st);
+  t.eqint(t.rc, 0, "ticket_stats is accepted again after the P0 fixtures");
+  t.eqint(t.st[0].p0, 1,
+    "a P0 that is done is no longer urgent, so only the still-open P0 is counted");
+
+  // ---- filtering by area -------------------------------------------------------
+  make_at("UI thing", "todo", true, "ui");
+  StatsArgs.clear(t.sa);
+  t.sa[0].area_n := io.push(t.sa[0].area, 0, "ui");
+  t.sa[0].area_ok := true;
+  Stats.clear(t.st);
+  t.rc := tool.ticket_stats(t.sa, t.st);
+  t.eqint(t.rc, 0, "ticket_stats filtered by area is accepted");
+  t.eqint(t.st[0].total, 1, "area=ui counts only the ticket in that area");
+
+  // ---- filtering by milestone ---------------------------------------------------
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, "Milestone ticket");
+  t.ca[0].milestone_n := io.push(t.ca[0].milestone, 0, "release-3");
+  t.ca[0].milestone_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc = 0, "a ticket with a milestone is created");
+
+  StatsArgs.clear(t.sa);
+  t.sa[0].milestone_n := io.push(t.sa[0].milestone, 0, "release-3");
+  t.sa[0].milestone_ok := true;
+  Stats.clear(t.st);
+  t.rc := tool.ticket_stats(t.sa, t.st);
+  t.eqint(t.rc, 0, "ticket_stats filtered by milestone is accepted");
+  t.eqint(t.st[0].total, 1, "milestone=release-3 counts only that milestone's ticket");
+
+  t.done;
+end.

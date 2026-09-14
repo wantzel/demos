@@ -1,0 +1,272 @@
+// query.wz -- listing and counting.
+//
+// Both walk every live row. That is the honest implementation at this size: 20,000 rows
+// is a few milliseconds, and an index would be a second structure to keep correct on
+// every write. The moment a measurement says otherwise, that is when to add one.
+//
+// What a list DOES promise is that you can tell whether you saw everything. `matched`
+// counts everything that passed the filter, `returned` how many came back, and
+// `truncated` says whether those differ. A list that silently stops at fifty looks
+// exactly like a list that found fifty -- and the caller acts on the wrong one.
+
+include "tickets.wz";
+
+const
+  Q.MAXLIMIT = 200;      // the array in TicketList; a higher limit cannot be answered
+  Q.DEFLIMIT = 50;
+
+// Does the loaded row pass every filter that was given? A filter left out is not a
+// filter -- this is where "optional means do not filter on it" actually happens.
+function q.match(a: array of ListArgs): bool;
+var i: int;
+    hit: bool;
+begin
+  if a[0].status_ok and not a[0].status_null and (a[0].status_n > 0) then
+    if not tk.same(tk.r.status[0..tk.r.statusn - 1], tk.r.statusn, a[0].status, a[0].status_n) then return false;
+  if a[0].priority_ok and not a[0].priority_null and (a[0].priority_n > 0) then
+    if not tk.same(tk.r.prio[0..tk.r.prion - 1], tk.r.prion, a[0].priority, a[0].priority_n) then return false;
+  if a[0].area_ok and not a[0].area_null and (a[0].area_n > 0) then
+    if not tk.same(tk.r.area[0..tk.r.arean - 1], tk.r.arean, a[0].area, a[0].area_n) then return false;
+  if a[0].kind_ok and not a[0].kind_null and (a[0].kind_n > 0) then
+    if not tk.same(tk.r.kind[0..tk.r.kindn - 1], tk.r.kindn, a[0].kind, a[0].kind_n) then return false;
+  if a[0].assignee_ok and not a[0].assignee_null and (a[0].assignee_n > 0) then
+    if not tk.same(tk.r.who[0..tk.r.whon - 1], tk.r.whon, a[0].assignee, a[0].assignee_n) then return false;
+  if a[0].milestone_ok and not a[0].milestone_null and (a[0].milestone_n > 0) then
+    if not tk.same(tk.r.ms[0..tk.r.msn - 1], tk.r.msn, a[0].milestone, a[0].milestone_n) then return false;
+  if a[0].flow_ok and not a[0].flow_null and (a[0].flow_n > 0) then
+    if not tk.same(tk.r.flow[0..tk.r.flown - 1], tk.r.flown, a[0].flow, a[0].flow_n) then return false;
+
+  // A label matches if the ticket carries it; labels are a set, not an ordered list.
+  if a[0].label_ok and not a[0].label_null and (a[0].label_n > 0) then
+  begin
+    hit := false;
+    for i := 0 to tk.r.nlabels - 1 do
+      if tk.same(tk.r.label[i * TK.LABELLEN..i * TK.LABELLEN + tk.r.labeln[i] - 1],
+                 tk.r.labeln[i], a[0].label, a[0].label_n) then
+      begin
+        hit := true;
+        break;
+      end;
+    if not hit then return false;
+  end;
+
+  // FREE TEXT LOOKS EVERYWHERE, and that is the decision worth stating. Searching only
+  // the title and the body means someone looking for a person, a label or a milestone
+  // gets nothing back -- which reads as "not found" rather than "not searched", and that
+  // is the expensive kind of wrong answer. One search box, one meaning.
+  if a[0].query_ok and not a[0].query_null and (a[0].query_n > 0) then
+  begin
+    hit := tk.contains(tk.r.title[0..tk.r.titlen - 1], tk.r.titlen, a[0].query, a[0].query_n)
+        or tk.contains(tk.r.body[0..tk.r.bodyn - 1], tk.r.bodyn, a[0].query, a[0].query_n)
+        or tk.contains(tk.r.id[0..tk.r.idn - 1], tk.r.idn, a[0].query, a[0].query_n)
+        or tk.contains(tk.r.who[0..tk.r.whon - 1], tk.r.whon, a[0].query, a[0].query_n)
+        or tk.contains(tk.r.ms[0..tk.r.msn - 1], tk.r.msn, a[0].query, a[0].query_n)
+        or tk.contains(tk.r.area[0..tk.r.arean - 1], tk.r.arean, a[0].query, a[0].query_n);
+    if not hit then
+      for i := 0 to tk.r.nlabels - 1 do
+        if tk.contains(tk.r.label[i * TK.LABELLEN..i * TK.LABELLEN + tk.r.labeln[i] - 1],
+                       tk.r.labeln[i], a[0].query, a[0].query_n) then
+        begin
+          hit := true;
+          break;
+        end;
+    // And the conversation: what someone said about a ticket is often the only place a
+    // word appears at all.
+    if not hit then
+      for i := 0 to tk.r.ncomments - 1 do
+        if tk.contains(tk.r.ctxt[i * TK.CTEXTLEN..i * TK.CTEXTLEN + tk.r.ctxtn[i] - 1],
+                       tk.r.ctxtn[i], a[0].query, a[0].query_n) then
+        begin
+          hit := true;
+          break;
+        end;
+    if not hit then return false;
+  end;
+  return true;
+end;
+
+// Drop every agent comment and work log line from an already-filled Ticket, in place.
+// This runs AFTER tkt.out, on the wire record, rather than by skipping rows while
+// copying: the same compaction (keep what passes, shift left, cut the count) that
+// tool.delete_ticket already uses on tk.all, so there is one idiom for "remove some
+// elements of a counted array" instead of two.
+procedure tkt.striphuman(t: array of Ticket);
+var i, w: int;
+begin
+  w := 0;
+  for i := 0 to t[0].comments_n - 1 do
+    if not tk.same(t[0].comments[i].audience, t[0].comments[i].audience_n, "agent", 5) then
+    begin
+      if w <> i then t[0].comments[w] := t[0].comments[i];
+      w := w + 1;
+    end;
+  t[0].comments_n := w;
+
+  w := 0;
+  for i := 0 to t[0].worklog_n - 1 do
+    if not tk.same(t[0].worklog[i].audience, t[0].worklog[i].audience_n, "agent", 5) then
+    begin
+      if w <> i then t[0].worklog[w] := t[0].worklog[i];
+      w := w + 1;
+    end;
+  t[0].worklog_n := w;
+end;
+
+function tool.list_tickets(a: array of ListArgs; r: array of TicketList): int;
+var row, lim, n, i, j: int;
+    seqs: array[0..Q.MAXLIMIT - 1] of int;
+    rows: array[0..Q.MAXLIMIT - 1] of int;
+    s, v: int;
+    onlyhuman: bool;
+begin
+  lim := Q.DEFLIMIT;
+  if a[0].limit_ok and not a[0].limit_null then
+  begin
+    lim := a[0].limit;
+    if lim < 1 then return tool.fail("limit must be at least 1");
+    if lim > Q.MAXLIMIT then lim := Q.MAXLIMIT;   // capped, and `truncated` will say so
+  end;
+
+  // "human" trims agent entries out of the tickets that come back; unset (or "agent",
+  // which would be a stranger request than a useful one) leaves everything in. The word
+  // is checked by name, same as flow and priority, rather than treated as a free label.
+  onlyhuman := false;
+  if a[0].audience_ok and not a[0].audience_null and (a[0].audience_n > 0) then
+  begin
+    if not tkt.okaudience(a[0].audience, a[0].audience_n) then
+      return tool.fail("audience must be human or agent");
+    onlyhuman := tk.same(a[0].audience, a[0].audience_n, "human", 5);
+  end;
+
+  // NEWEST FIRST, and the sort is an insertion into a kept list of at most `lim` -- so
+  // the memory is the answer, not the number of matches. Insertion sort is the right
+  // choice here precisely because the list is short: no allocation, no recursion, and
+  // it is obvious what it does.
+  n := 0;
+  r[0].matched := 0;
+  for row := 0 to tk.n - 1 do
+    begin
+      tk.r := tk.all[row];
+      if q.match(a) then
+      begin
+        r[0].matched := r[0].matched + 1;
+        s := tk.r.seq;
+        // Keep at most `lim`, highest seq first. Two cases, and conflating them is what
+        // made an earlier version return the wrong order: while the list is not full
+        // everything gets inserted, and once it is full only something that beats the
+        // smallest kept value does -- and then it pushes that one out.
+        if n < lim then
+        begin
+          i := n;
+          n := n + 1;
+        end
+        else if s > seqs[n - 1] then i := n - 1
+        else i := -1;
+
+        if i >= 0 then
+        begin
+          while (i > 0) and (seqs[i - 1] < s) do
+          begin
+            seqs[i] := seqs[i - 1];
+            rows[i] := rows[i - 1];
+            i := i - 1;
+          end;
+          seqs[i] := s;
+          rows[i] := row;
+        end;
+      end;
+    end;
+
+  for j := 0 to n - 1 do
+  begin
+    tk.r := tk.all[rows[j]];
+    tkt.out(r[0].tickets[j..j]);
+    if onlyhuman then tkt.striphuman(r[0].tickets[j..j]);
+  end;
+  r[0].tickets_n := n;
+  r[0].returned := n;
+  r[0].truncated := r[0].matched > n;
+  return 0;
+end;
+
+// ---- what to work on next ----------------------------------------------------
+//
+// The five client-side steps (list, filter to todo, sort by priority, drop what is
+// assigned, drop what is blocked) collapse into one scan, because the rule only has to
+// be right once here rather than right in every caller. `found` carries "nothing
+// qualifies" as an ordinary answer -- an empty backlog is ended work, not a failure.
+
+// Is every id in this ticket's blocked_by either unknown or done? An id that no longer
+// exists cannot block forever -- a deleted blocker does not freeze the ticket it once
+// blocked.
+function q.unblocked: bool;
+var i, brow: int;
+begin
+  for i := 0 to tk.r.nblocks - 1 do
+  begin
+    brow := tk.find(tk.r.block[i * TK.IDLEN..i * TK.IDLEN + tk.r.blockn[i] - 1], tk.r.blockn[i]);
+    if brow >= 0 then
+      if not tk.same(tk.all[brow].status[0..tk.all[brow].statusn - 1], tk.all[brow].statusn, "done", 4) then
+        return false;
+  end;
+  return true;
+end;
+
+function tool.next_ticket(a: array of NextArgs; r: array of NextResult): int;
+var row, best: int;
+begin
+  best := -1;
+  for row := 0 to tk.n - 1 do
+  begin
+    tk.r := tk.all[row];
+
+    if tk.same(tk.r.status[0..tk.r.statusn - 1], tk.r.statusn, "done", 4) then continue;
+    if (tk.r.whon > 0) and not tk.same(tk.r.who[0..tk.r.whon - 1], tk.r.whon, a[0].who, a[0].who_n) then continue;
+    if a[0].flow_ok and not a[0].flow_null and (a[0].flow_n > 0) then
+      if not tk.same(tk.r.flow[0..tk.r.flown - 1], tk.r.flown, a[0].flow, a[0].flow_n) then continue;
+    if not q.unblocked then continue;
+
+    // Highest priority first ('0' < '1' < '2' < '3', so the lowest char wins), then the
+    // lowest seq -- tickets are numbered in creation order, so that IS oldest first.
+    if best < 0 then best := row
+    else if tk.all[row].prio[1] < tk.all[best].prio[1] then best := row
+    else if (tk.all[row].prio[1] = tk.all[best].prio[1]) and (tk.all[row].seq < tk.all[best].seq) then best := row;
+  end;
+
+  if best < 0 then begin r[0].found := false; return 0; end;
+  tk.r := tk.all[best];
+  r[0].found := true;
+  tkt.out(view(addr(r[0].ticket), 1));
+  return 0;
+end;
+
+// ---- counting --------------------------------------------------------------
+
+function tool.ticket_stats(a: array of StatsArgs; r: array of Stats): int;
+var row: int;
+    open: bool;
+begin
+  for row := 0 to tk.n - 1 do
+    begin
+      tk.r := tk.all[row];
+      if a[0].area_ok and not a[0].area_null and (a[0].area_n > 0) then
+        if not tk.same(tk.r.area[0..tk.r.arean - 1], tk.r.arean, a[0].area, a[0].area_n) then continue;
+      if a[0].milestone_ok and not a[0].milestone_null and (a[0].milestone_n > 0) then
+        if not tk.same(tk.r.ms[0..tk.r.msn - 1], tk.r.msn, a[0].milestone, a[0].milestone_n) then continue;
+
+      r[0].total := r[0].total + 1;
+      open := false;
+      if tk.same(tk.r.status[0..tk.r.statusn - 1], tk.r.statusn, "todo", 4) then
+        begin r[0].todo := r[0].todo + 1; open := true; end
+      else if tk.same(tk.r.status[0..tk.r.statusn - 1], tk.r.statusn, "doing", 5) then
+        begin r[0].doing := r[0].doing + 1; open := true; end
+      else if tk.same(tk.r.status[0..tk.r.statusn - 1], tk.r.statusn, "done", 4) then
+        r[0].done := r[0].done + 1;
+
+      // P0 counts only what is still open: a finished emergency is not an emergency,
+      // and a header that says otherwise trains people to ignore it.
+      if open and tk.same(tk.r.prio[0..tk.r.prion - 1], tk.r.prion, "P0", 2) then
+        r[0].p0 := r[0].p0 + 1;
+    end;
+  return 0;
+end;

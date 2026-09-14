@@ -1,0 +1,116 @@
+// Newest first, and a capped list says so.
+//
+// This is the test that caught two real bugs: an id built with the padding in the wrong
+// place (T-0003 came back with trailing NUL bytes and sorted last), and an insertion that
+// conflated "the list is not full yet" with "this beats the smallest kept value".
+//
+// It calls the tools directly rather than over HTTP: a tool is a function, so a test is a
+// program that calls it. No server, no port, no client -- and it runs in milliseconds.
+
+program list_order;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+
+// lib/http.wz leaves this open for the application; a test has no requests to serve.
+procedure app.request;
+begin
+end;
+
+var
+  ca: array[0..0] of CreateArgs;
+  one: array[0..0] of TicketOne;
+  la: array[0..0] of ListArgs;
+  lst: array[0..0] of TicketList;
+  i, rc, n: int;
+  dir: array[0..1023] of char;
+  dirn: int;
+
+procedure fail(what: str);
+begin
+  io.puts(STDERR, "FAIL: ");
+  io.puts(STDERR, what);
+  io.puts(STDERR, "\n");
+  halt(1);
+end;
+
+// Is tickets[i] the one titled `want`?
+function titled(i: int; want: str): bool;
+var j: int;
+begin
+  if lst[0].tickets[i].title_n <> slen(want) then return false;
+  for j := 0 to slen(want) - 1 do
+    if lst[0].tickets[i].title[j] <> schar(want, j) then return false;
+  return true;
+end;
+
+procedure make(title: str);
+begin
+  CreateArgs.clear(ca);
+  ca[0].title_n := io.push(ca[0].title, 0, title);
+  TicketOne.clear(one);
+  rc := tool.create_ticket(ca, one);
+  if rc <> 0 then fail("create_ticket refused a valid ticket");
+end;
+
+begin
+  // A data directory of our own, handed in by the runner.
+  if argc() < 2 then fail("this test wants a data directory as its first argument");
+  dirn := 0;
+  while true do
+  begin
+    if argch(1, dirn) = chr(0) then break;
+    dir[dirn] := argch(1, dirn);
+    dirn := dirn + 1;
+  end;
+
+  tk.dirn := tk.set(tk.dir, TK.PATHLEN, dir, dirn);
+  tk.loadall;
+
+  make("Alpha");
+  make("Beta");
+  make("Gamma");
+  make("Delta");
+
+  // ---- newest first --------------------------------------------------------
+  ListArgs.clear(la);
+  TicketList.clear(lst);
+  rc := tool.list_tickets(la, lst);
+  if rc <> 0 then fail("list_tickets refused an empty filter");
+  if lst[0].returned <> 4 then fail("expected four tickets back");
+  if not titled(0, "Delta") then fail("newest should be first");
+  if not titled(1, "Gamma") then fail("second newest should be second");
+  if not titled(2, "Beta")  then fail("third");
+  if not titled(3, "Alpha") then fail("oldest should be last");
+
+  // ---- an id carries no padding past its length ----------------------------
+  // The earlier bug: the length said one thing and the bytes another, so the id
+  // compared and sorted as if it had NUL bytes glued on.
+  for i := 0 to lst[0].returned - 1 do
+  begin
+    n := lst[0].tickets[i].id_n;
+    if n < 6 then fail("an id should read T-0001, so at least six characters");
+    if lst[0].tickets[i].id[n - 1] = chr(0) then fail("an id must not end in a NUL byte");
+  end;
+
+  // ---- a cap says that it capped -------------------------------------------
+  ListArgs.clear(la);
+  la[0].limit := 2;
+  la[0].limit_ok := true;
+  TicketList.clear(lst);
+  rc := tool.list_tickets(la, lst);
+  if rc <> 0 then fail("list_tickets refused limit 2");
+  if lst[0].returned <> 2 then fail("limit 2 should return two");
+  if lst[0].matched <> 4 then fail("matched should count everything that passed the filter");
+  if not lst[0].truncated then fail("truncated must be true when matched exceeds returned");
+  if not titled(0, "Delta") then fail("a capped list still starts at the newest");
+  if not titled(1, "Gamma") then fail("and then the next newest");
+
+  io.puts(STDOUT, "list_order ok\n");
+end.

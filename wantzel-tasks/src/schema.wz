@@ -1,0 +1,246 @@
+// schema.wz -- what a ticket is, and what every tool takes and returns.
+//
+// THIS FILE IS THE INTERFACE. Nothing below it re-describes these shapes: the compiler
+// turns each `schema` into a parser, a writer and a JSON Schema, and each line of the
+// `tools` block into an entry in the MCP tool table, the argument checking, the dispatch
+// and a REST route. A field that is not here cannot be read, written or accepted --
+// not as a validation error at run time, but as a program that does not compile.
+//
+// Read this file and you know the whole API. That is the point of the demo.
+//
+// The include is not decoration: a `schema` compiles into a parser and a writer, and
+// those live in lib/json.wz. Leave it out and the compiler reports an undeclared
+// identifier inside generated code, with a line number that is not in any file you
+// wrote -- so if you ever see that, this is the first thing to check.
+
+include "json.wz";
+
+// ---- a comment -------------------------------------------------------------
+//
+// Append-only, each with an author and a moment. Nothing is edited or deleted: a
+// conversation you can rewrite afterwards is not a record of what happened.
+
+// Two values, not a free label:
+//
+//   human   short, plain, written to be read by a person
+//   agent   complete, detailed, written to be read by a machine
+//
+// It changes how the entry is DISPLAYED, never what it is about -- same argument as
+// `flow` above. Absent means human, because an author who has not thought about
+// audience is usually writing for a person.
+
+schema Comment = record
+  at:       text[24] "ISO 8601, UTC -- when it was said";
+  author:   text[64];
+  text:     text[2000];
+  audience: text[8]? "human or agent; default human";
+end;
+
+// ---- the direction of the work ---------------------------------------------
+//
+// A field of its own, deliberately not a label. A label is free-form and means whatever
+// a team decides it means; this is a closed set of four, and it changes how a ticket is
+// READ:
+//
+//   h2a   a person asked an agent to do something
+//   a2h   an agent needs a person: a decision, an approval, a credential
+//   a2a   one agent handed work to another
+//   h2h   two people, the way tickets have always worked
+//
+// It answers the question that matters most in a backlog worked by people and agents
+// together: WHAT IS WAITING ON ME? An a2h ticket is blocking a machine that would
+// otherwise still be working, and that is a different kind of urgent from a P0 nobody
+// has started. Neither status nor priority can say it, which is why it is not a label.
+
+// A work log line used to be a bare string; it is now this, for the same reason a
+// comment carries audience -- one ticket collects a human line and a agent line
+// side by side, so the field has to travel with the entry, not with the ticket.
+
+schema WorkEntry = record
+  at:       text[24] "ISO 8601, UTC -- when it was recorded";
+  text:     text[500] "one line: what was found, decided or measured";
+  audience: text[8]? "human or agent; default human";
+end;
+
+// ---- the ticket ------------------------------------------------------------
+//
+// The shape is the one we use ourselves, so this server can manage its own backlog.
+// Two ideas are kept apart on purpose, because merging them cost us a day of reading:
+//
+//   area  WHERE the work sits   (ui, api, docs, ...)
+//   kind  WHAT KIND of work it is (bug, gap, chore, research, doc)
+//
+// "area: api" holds a crash and a missing feature alike; without `kind` the question
+// "what is broken?" can only be answered by reading every ticket.
+
+schema Ticket = record
+  id:       text[16]  "T-0001, assigned by the server and never reused";
+  title:    text[200];
+  body:     text[8000] "the whole story: what, why, and what done looks like";
+  status:   text[12]  "todo, doing or done";
+  priority: text[2]   "P0 (now) through P3 (someday)";
+  area:     text[24]  "where the work sits";
+  kind:     text[12]? "bug, gap, chore, research or doc";
+  assignee: text[64]?;
+  flow:     text[16]? "the direction of the work: h2a, a2h, a2a or h2h";
+  milestone: text[48]? "the group this belongs to: a release, a sprint, a theme";
+  labels:   array[0..7] of text[24] "free tags, at most eight";
+  blocked_by: array[0..7] of text[16] "ids this one waits for";
+  created:  text[24] "ISO 8601, UTC";
+  updated:  text[24];
+  comments: array[0..31] of Comment "the conversation, oldest first";
+  worklog:  array[0..31] of WorkEntry "dated facts: measured X, chose Y because Z";
+end;
+
+// ---- creating and changing -------------------------------------------------
+
+schema CreateArgs = record
+  title:    text[200] "one line, stated as the outcome you want";
+  body:     text[8000]? "what, why, and what done looks like";
+  priority: text[2]?  "P0 to P3, default P2";
+  area:     text[24]? "default 'general'";
+  kind:     text[12]?;
+  assignee: text[64]?;
+  flow:     text[16]? "h2a, a2h, a2a or h2h";
+  milestone: text[48]?;
+  labels:   array[0..7] of text[24]?;
+end;
+
+// Every field is optional: send only what changes. A field left out keeps its value,
+// which is why there is no separate `patch` -- one way per concept.
+schema UpdateArgs = record
+  id:       text[16];
+  title:    text[200]?;
+  body:     text[8000]?;
+  status:   text[12]?  "todo, doing or done";
+  priority: text[2]?;
+  area:     text[24]?;
+  kind:     text[12]?;
+  assignee: text[64]?;
+  flow:     text[16]? "h2a, a2h, a2a or h2h";
+  milestone: text[48]?;
+  labels:   array[0..7] of text[24]?;
+  blocked_by: array[0..7] of text[16]?;
+end;
+
+schema IdArgs = record
+  id: text[16];
+end;
+
+// ---- saying something, and recording something -----------------------------
+//
+// Two different things, deliberately not one field. A COMMENT is a message to other
+// people. A WORK LOG line is a dated fact -- measured this, chose that because of this,
+// that approach failed for this reason. The second is what makes a ticket readable a
+// month later by someone who was not there, and a status field can never carry it.
+
+schema CommentArgs = record
+  id:       text[16];
+  author:   text[64] "who is speaking";
+  text:     text[2000];
+  audience: text[8]? "human or agent, default human";
+end;
+
+schema LogArgs = record
+  id:       text[16];
+  text:     text[500] "one line: what was found, decided or measured";
+  audience: text[8]? "human or agent, default human";
+end;
+
+// ---- reading ---------------------------------------------------------------
+
+// A filter left out means "do not filter on it". `limit` is capped by the server and
+// the answer says what it used, so a caller never has to guess whether it saw
+// everything -- see `returned` and `truncated` below.
+schema ListArgs = record
+  status:   text[12]?;
+  priority: text[2]?;
+  area:     text[24]?;
+  kind:     text[12]?;
+  assignee: text[64]?;
+  flow:     text[16]? "only this direction of work";
+  milestone: text[48]? "only this milestone";
+  label:    text[24]? "keep tickets carrying this label";
+  query:    text[200]? "case-insensitive text in the title or body";
+  audience: text[8]? "human: omit agent comments and work log lines from the answer; unset returns everything";
+  limit:    int? "at most 200, default 50";
+end;
+
+schema TicketList = record
+  tickets:   array[0..199] of Ticket;
+  returned:  int "how many are in this answer";
+  matched:   int "how many matched the filter in total";
+  truncated: bool "true when matched > returned, so you know to narrow the filter";
+end;
+
+schema TicketOne = record
+  ticket: Ticket;
+end;
+
+// ---- claiming ---------------------------------------------------------------
+//
+// The conditional write that update_ticket cannot express: set assignee and status
+// together, but only if no one already holds the ticket. See tickets.wz for why a
+// read-then-write through update_ticket leaves a gap two agents can both walk through.
+
+schema ClaimArgs = record
+  id:  text[16];
+  who: text[64] "the agent making the claim";
+end;
+
+// ---- what to work on next ---------------------------------------------------
+//
+// The ordering rule (not done, not someone else's, not blocked, highest priority,
+// oldest first) lives once on the server instead of once per caller. `found` is how
+// "nothing to do" comes back as an answer rather than as tool.fail: an empty backlog
+// is a normal state, not an error, and a caller should not have to catch one to learn it.
+
+schema NextArgs = record
+  who:  text[64] "who is asking";
+  flow: text[16]? "only this direction of work";
+end;
+
+schema NextResult = record
+  found:  bool "false when nothing qualifies -- ticket is then empty, not an error";
+  ticket: Ticket;
+end;
+
+// ---- counting --------------------------------------------------------------
+//
+// One call for the board header, so a UI does not fetch every ticket to draw five
+// numbers. Counting in the server costs a scan; counting in the client costs a
+// download.
+
+schema StatsArgs = record
+  area:      text[24]? "count within one area only";
+  milestone: text[48]? "count within one milestone only";
+end;
+
+schema Stats = record
+  total: int;
+  todo:  int;
+  doing: int;
+  done:  int;
+  p0:    int "open P0 tickets -- todo or doing";
+end;
+
+// ---- the tool table --------------------------------------------------------
+//
+// `readonly` tells a caller the tool does not change anything; `idempotent` that
+// calling it twice with the same arguments has the same effect as calling it once.
+// Both end up in the MCP tool table, where an agent can act on them: a readonly tool
+// is safe to retry when a connection drops.
+
+tools
+  create_ticket(CreateArgs): TicketOne  "Create a ticket. Returns it with the id the server assigned.";
+  get_ticket(IdArgs): TicketOne         "One ticket by id." readonly idempotent;
+  list_tickets(ListArgs): TicketList    "Tickets matching a filter, newest first. Every filter is optional." readonly;
+  update_ticket(UpdateArgs): TicketOne  "Change a ticket. Send only the fields that change; the rest keep their value." idempotent;
+  delete_ticket(IdArgs): TicketOne      "Delete a ticket. Returns the ticket as it was." idempotent;
+  ticket_stats(StatsArgs): Stats        "How many tickets per status, for a board header." readonly idempotent;
+  add_comment(CommentArgs): TicketOne   "Say something on a ticket. Comments are append-only: nothing is edited or removed.";
+  log_work(LogArgs): TicketOne          "Record a dated fact on a ticket -- what was found, decided or measured. Not a message to someone, a record for whoever reads this next.";
+  claim_ticket(ClaimArgs): TicketOne    "Assign a ticket to yourself and move it to doing, in one call. Refuses if someone else already holds it; claiming your own claim again succeeds.";
+  release_ticket(IdArgs): TicketOne     "Clear the assignee and move the ticket back to todo, so it re-enters the backlog for everyone." idempotent;
+  next_ticket(NextArgs): NextResult     "The single ticket to start next: not done, not someone else's, not blocked, highest priority first, oldest first within a priority. found=false when there is nothing to do." readonly;
+end;

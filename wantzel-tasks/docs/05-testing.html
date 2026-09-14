@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Testing: a test is a program that calls the tools</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#1a1815;--muted:#5e5850;--rule:#e3ded5;
+--code-bg:#f2efe9;--accent:#8a4218;--accent-soft:#f0e4da;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#15140f;--fg:#ecebe6;--muted:#a09a8f;
+--rule:#2e2b25;--code-bg:#1e1c18;--accent:#e0a473;--accent-soft:#2a211a;--card:#1e1c18}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+.wrap{max-width:44rem;margin:0 auto;padding:0 1.3rem 4rem}
+a{color:var(--accent)}
+nav{border-bottom:1px solid var(--rule);margin-bottom:2.4rem}
+nav .wrap{padding-top:1.1rem;padding-bottom:1.1rem;display:flex;gap:1rem;
+align-items:baseline;font:.9rem ui-sans-serif,system-ui,sans-serif}
+nav a{text-decoration:none;font-weight:600}
+nav .sep{color:var(--muted)}
+h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
+h1{font-size:2rem;margin:1.6rem 0 1.4rem}
+h2{font-size:1.4rem;margin:3rem 0 .8rem}
+h3{font-size:1.05rem;margin:1.9rem 0 .5rem}
+p{margin:0 0 1.1rem}
+ul,ol{margin:0 0 1.2rem;padding-left:1.3rem}li{margin-bottom:.4rem}
+code{font:.87em ui-monospace,Menlo,monospace;background:var(--code-bg);
+padding:.1em .35em;border-radius:5px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.3rem}
+pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+blockquote{border-left:3px solid var(--accent);background:var(--accent-soft);
+border-radius:0 10px 10px 0;padding:.9rem 1.1rem;margin:0 0 1.3rem}
+blockquote p:last-child{margin:0}
+table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
+font:.92rem ui-sans-serif,system-ui,sans-serif}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);
+vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.8rem;letter-spacing:.04em;
+text-transform:uppercase}
+hr{border:0;border-top:1px solid var(--rule);margin:2.4rem 0}
+img{max-width:100%;border:1px solid var(--rule);border-radius:12px}
+footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;
+color:var(--muted);font-size:.9rem}
+@media(max-width:620px){body{font-size:16px}h1{font-size:1.6rem}.wrap{padding:0 1rem 3rem}}
+</style>
+</head>
+<body>
+<nav><div class="wrap"><a href="index.html">Overview</a><span class="sep">/</span><span class="sep">5. Testing: a test is a program that calls the tools</span></div></nav>
+<div class="wrap">
+<h1>5. Testing: a test is a program that calls the tools</h1>
+<p>There is no test framework, no server started for a test, no port and no HTTP client involved in running one. A tool in this codebase is a function — <code>tool.create_ticket</code>, <code>tool.update_ticket</code>, and so on, one per line of the <code>tools</code> block in <code>schema.wz</code> — so a test is simply a Wantzel program that calls that function directly and checks what it returned. <code>tests/create.wz</code> is representative:</p>
+<pre><code>program test_create;
+
+include &quot;json.wz&quot;;
+include &quot;mcphttp.wz&quot;;
+include &quot;router.wz&quot;;
+
+include &quot;../src/schema.wz&quot;;
+include &quot;../src/tickets.wz&quot;;
+include &quot;../src/query.wz&quot;;
+include &quot;tools.wz&quot;;
+include &quot;_helpers.wz&quot;;
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+begin
+  t.start(&quot;create&quot;);
+
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, &quot;A ticket with only a title&quot;);
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.eqint(t.rc, 0, &quot;a title alone is enough to create a ticket&quot;);
+  t.eqtext(t.one[0].ticket.status, t.one[0].ticket.status_n, &quot;todo&quot;, &quot;a new ticket starts as todo&quot;);
+  ...
+
+  t.done;
+end.</code></pre>
+<p>It includes the same source files the real server does, fills in an arguments record by hand instead of parsing JSON, calls the tool function, and compares the result with a small set of helpers from <code>tests/_helpers.wz</code> — <code>t.ok</code>, <code>t.eqint</code>, <code>t.eqtext</code>, each reporting what was expected and what came back rather than an assertion line number. <code>app.request</code> is left empty because a test never serves a request; it is only present because <code>lib/http.wz</code>, included transitively, expects the application to define it.</p>
+<p>There are five test files under <code>tests/</code>: <code>create.wz</code>, <code>get_delete.wz</code>, <code>update.wz</code>, <code>list_order.wz</code>. Files beginning with an underscore are includes, not tests, and the runner skips them &mdash; which is why the shared machinery lives in <code>_helpers.wz</code>. Each of the four real test files targets one area — <code>create.wz</code> the defaults and validation on <code>create_ticket</code>, <code>update.wz</code> the &quot;only what was sent changes&quot; behavior, <code>list_order.wz</code> the newest-first ordering and the <code>truncated</code> flag when a list is capped. That last one is worth reading once: its opening comment says it caught two real bugs during development — an id built with padding in the wrong place, and an insertion loop that confused &quot;not full yet&quot; with &quot;beats the smallest kept value&quot; — both found by a test that never opened a socket.</p>
+<h2>The compiler is the first judge</h2>
+<p>Because a test is an ordinary program, it has to compile before it can run, and a test that fails to compile counts as a failing test — there is no separate &quot;does this build&quot; step to skip past. Running the suite makes that visible directly:</p>
+<pre><code>./wzttest              # every test in tests/
+./wzttest create        # only tests whose filename contains &quot;create&quot;</code></pre>
+<p>For each file, <code>wzttest</code> compiles it with the Wantzel compiler; if that fails, it prints the compiler&#x27;s output and counts the test as failed without ever running anything. If it compiles, <code>wzttest</code> gives the resulting program its own fresh, empty data directory as its first command-line argument (<code>tests/_helpers.wz</code>&#x27;s <code>t.start</code> reads that argument and points the ticket store at it) and runs it. Each test gets a directory nobody else touches, so tests cannot see each other&#x27;s tickets and their order does not matter.</p>
+<p>A passing test prints its name and how many checks it ran, such as <code>create ok (9 checks)</code> — not just that it passed, but how much it actually checked, so a test that silently stopped checking partway through does not look identical to one that checked everything and passed. A failing check prints what was expected and what came back; a failing compile prints the compiler&#x27;s own error.</p>
+<p>Because there is no server in the loop, the whole suite runs in a fraction of a second — calling a function is not slower here than calling a function anywhere else, and nothing about testing this application requires more machinery than that.</p>
+<hr>
+<p>This was the last of the tutorial. Together, <a href="01-what-a-ticket-is.html">1</a> through <a href="05-testing.html">5</a> cover the whole shape of the service: what a ticket is and why it is a file, how one declaration becomes three interfaces, what storing tickets as files costs and buys, how the UI is just another caller of the same tools, and how a test calls those tools directly. Reading <code>src/schema.wz</code> after this should read like the summary it is.</p>
+<footer>A demo of <a href="https://wantzel.com">Wantzel</a> &middot; </footer>
+</div>
+</body>
+</html>

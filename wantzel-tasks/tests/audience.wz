@@ -1,0 +1,185 @@
+// audience on comments and work log lines: human by default, agent when said so, and
+// an invalid value refused by name -- the same shape as flow and priority.
+//
+// The interesting case is not the happy path but backward compatibility: a file written
+// by hand, before this field existed, has no audience marker at all and must still load
+// as "human". A ticket system that breaks on its own old files is not one you can trust
+// to keep editing by hand.
+program test_audience;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+var
+  cargs: array[0..0] of CommentArgs;
+  largs: array[0..0] of LogArgs;
+  fixture: array[0..4095] of char;
+  fixturen: int;
+
+// Write a file into the test's data directory by hand -- the way a ticket looked before
+// audience existed -- and bypass tk.write on purpose, so the test proves the PARSER
+// tolerates old files rather than proving that whatever this build writes reads back.
+procedure write_legacy_file(name: str; buf: array of char; n: int);
+var path: array[0..1023] of char;
+    pn, fd, wrote: int;
+begin
+  pn := tk.set(path, 1024, t.dir, t.dirn);
+  path[pn] := '/'; pn := pn + 1;
+  pn := io.push(path, pn, name);
+  path[pn] := chr(0);
+  fd := sys3(SYS.open, addr(path[0]), bor(bor(O_WRONLY, O_CREAT), O_TRUNC), 420);
+  t.ok(fd >= 0, "the legacy fixture file can be opened for writing");
+  wrote := io.write(fd, addr(buf[0]), n);
+  t.eqint(wrote, n, "the whole fixture is written");
+  sys1(SYS.close, fd);
+end;
+
+begin
+  t.start("audience");
+
+  t.make("A ticket to discuss");
+
+  // ---- default: a comment sent without an audience is human -------------------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := tk.set(cargs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  cargs[0].author_n := io.push(cargs[0].author, 0, "floris");
+  cargs[0].text_n := io.push(cargs[0].text, 0, "Quick check before we ship.");
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.eqint(t.rc, 0, "a comment with no audience is accepted");
+  t.eqtext(t.one[0].ticket.comments[0].audience, t.one[0].ticket.comments[0].audience_n,
+           "human", "and defaults to human");
+
+  // ---- an explicit agent comment round-trips -----------------------------------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := tk.set(cargs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  cargs[0].author_n := io.push(cargs[0].author, 0, "builder-agent");
+  cargs[0].text_n := io.push(cargs[0].text, 0,
+    "Ran the suite: 40 tests, 312 checks, all green. Rebuilt, timed the cold start, compared against the previous binary, no regression.");
+  cargs[0].audience_n := io.push(cargs[0].audience, 0, "agent");
+  cargs[0].audience_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.eqint(t.rc, 0, "a comment marked agent is accepted");
+  t.eqtext(t.one[0].ticket.comments[1].audience, t.one[0].ticket.comments[1].audience_n,
+           "agent", "and keeps the audience it was sent with");
+
+  // Reload the directory from scratch, so the parser -- not just the in-memory struct
+  // tool.add_comment already holds -- is what proves the round trip through the FILE.
+  tk.loadall;
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "the ticket is still there after reloading the directory from disk");
+  t.eqint(t.one[0].ticket.comments_n, 2, "both comments survive the round trip");
+  t.eqtext(t.one[0].ticket.comments[0].audience, t.one[0].ticket.comments[0].audience_n,
+           "human", "the first comment's audience round-trips as human");
+  t.eqtext(t.one[0].ticket.comments[1].audience, t.one[0].ticket.comments[1].audience_n,
+           "agent", "the second comment's audience round-trips as agent");
+
+  // ---- an invalid audience is refused by name ----------------------------------
+  CommentArgs.clear(cargs);
+  cargs[0].id_n := tk.set(cargs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  cargs[0].author_n := io.push(cargs[0].author, 0, "floris");
+  cargs[0].text_n := io.push(cargs[0].text, 0, "This should not land.");
+  cargs[0].audience_n := io.push(cargs[0].audience, 0, "robot");
+  cargs[0].audience_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.add_comment(cargs, t.one);
+  t.ok(t.rc <> 0, "audience \"robot\" is refused -- only human or agent exist");
+
+  // ---- a work log line carries its audience too --------------------------------
+  LogArgs.clear(largs);
+  largs[0].id_n := tk.set(largs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  largs[0].text_n := io.push(largs[0].text, 0, "measured the login latency: 400ms p50");
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.eqint(t.rc, 0, "a work log line with no audience is accepted");
+  t.eqtext(t.one[0].ticket.worklog[0].audience, t.one[0].ticket.worklog[0].audience_n,
+           "human", "and defaults to human, same as a comment");
+
+  LogArgs.clear(largs);
+  largs[0].id_n := tk.set(largs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  largs[0].text_n := io.push(largs[0].text, 0,
+    "Profiled every route: list_tickets 3ms p50 over 500 tickets, get_ticket 0.4ms, no allocation in the hot path, matches the O(n) scan design.");
+  largs[0].audience_n := io.push(largs[0].audience, 0, "agent");
+  largs[0].audience_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.eqint(t.rc, 0, "a work log line marked agent is accepted");
+  t.eqint(t.one[0].ticket.worklog_n, 2, "both lines are kept");
+  t.eqtext(t.one[0].ticket.worklog[1].audience, t.one[0].ticket.worklog[1].audience_n,
+           "agent", "and the second line keeps the audience it was sent with");
+
+  // The work log line still carries the dated text people are used to reading; audience
+  // is a field alongside it, not a prefix that swallows part of the text.
+  t.ok(t.one[0].ticket.worklog[1].text_n > slen("Profiled every route"),
+       "the work log text itself is unaffected by the audience field");
+
+  LogArgs.clear(largs);
+  largs[0].id_n := tk.set(largs[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  largs[0].text_n := io.push(largs[0].text, 0, "should not land either");
+  largs[0].audience_n := io.push(largs[0].audience, 0, "everyone");
+  largs[0].audience_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.log_work(largs, t.one);
+  t.ok(t.rc <> 0, "audience \"everyone\" on a work log line is refused by name");
+
+  // ---- a ticket written by hand, before audience existed, parses as human -------
+  //
+  // This is the compatibility requirement, not a nicety: every file already sitting in
+  // data/ predates this field, so "no marker" has to mean "human" or the whole directory
+  // stops loading the day this ships.
+  fixturen := 0;
+  fixturen := io.push(fixture, fixturen, "---\n");
+  fixturen := io.push(fixture, fixturen, "id: T-9001\n");
+  fixturen := io.push(fixture, fixturen, "title: Written by hand\n");
+  fixturen := io.push(fixture, fixturen, "status: todo\n");
+  fixturen := io.push(fixture, fixturen, "priority: P2\n");
+  fixturen := io.push(fixture, fixturen, "area: general\n");
+  fixturen := io.push(fixture, fixturen, "created: 2026-01-01T00:00:00Z\n");
+  fixturen := io.push(fixture, fixturen, "updated: 2026-01-01T00:00:00Z\n");
+  fixturen := io.push(fixture, fixturen, "labels: []\n");
+  fixturen := io.push(fixture, fixturen, "blocked_by: []\n");
+  fixturen := io.push(fixture, fixturen, "---\n");
+  fixturen := io.push(fixture, fixturen, "\n");
+  fixturen := io.push(fixture, fixturen, "A ticket someone typed into an editor.\n");
+  fixturen := io.push(fixture, fixturen, "\n");
+  fixturen := io.push(fixture, fixturen, "## Work log\n");
+  fixturen := io.push(fixture, fixturen, "- 2026-01-01 - noticed the deploy script was missing a step\n");
+  fixturen := io.push(fixture, fixturen, "\n");
+  fixturen := io.push(fixture, fixturen, "## Comments\n");
+  fixturen := io.push(fixture, fixturen, "\n");
+  fixturen := io.push(fixture, fixturen, "### 2026-01-01T00:00:00Z floris\n");
+  fixturen := io.push(fixture, fixturen, "Should we fix the script or the docs?\n");
+  write_legacy_file("T-9001.md", fixture, fixturen);
+
+  tk.loadall;
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := io.push(t.ia[0].id, 0, "T-9001");
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "the hand-written ticket loads at all");
+  t.eqint(t.one[0].ticket.comments_n, 1, "its one comment is read");
+  t.eqtext(t.one[0].ticket.comments[0].audience, t.one[0].ticket.comments[0].audience_n,
+           "human", "a comment with no marker in the file parses as human");
+  t.eqint(t.one[0].ticket.worklog_n, 1, "its one work log line is read");
+  t.eqtext(t.one[0].ticket.worklog[0].audience, t.one[0].ticket.worklog[0].audience_n,
+           "human", "a work log line with no marker in the file parses as human");
+  t.eqtext(t.one[0].ticket.worklog[0].text, t.one[0].ticket.worklog[0].text_n,
+           "noticed the deploy script was missing a step",
+           "and the line text is split from its date the same way a freshly written line is");
+  t.eqtext(t.one[0].ticket.worklog[0].at, t.one[0].ticket.worklog[0].at_n,
+           "2026-01-01", "with the date recovered from in front of the dash");
+
+  t.done;
+end.

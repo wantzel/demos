@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. What a ticket is, and why it is a file</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#1a1815;--muted:#5e5850;--rule:#e3ded5;
+--code-bg:#f2efe9;--accent:#8a4218;--accent-soft:#f0e4da;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#15140f;--fg:#ecebe6;--muted:#a09a8f;
+--rule:#2e2b25;--code-bg:#1e1c18;--accent:#e0a473;--accent-soft:#2a211a;--card:#1e1c18}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+.wrap{max-width:44rem;margin:0 auto;padding:0 1.3rem 4rem}
+a{color:var(--accent)}
+nav{border-bottom:1px solid var(--rule);margin-bottom:2.4rem}
+nav .wrap{padding-top:1.1rem;padding-bottom:1.1rem;display:flex;gap:1rem;
+align-items:baseline;font:.9rem ui-sans-serif,system-ui,sans-serif}
+nav a{text-decoration:none;font-weight:600}
+nav .sep{color:var(--muted)}
+h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
+h1{font-size:2rem;margin:1.6rem 0 1.4rem}
+h2{font-size:1.4rem;margin:3rem 0 .8rem}
+h3{font-size:1.05rem;margin:1.9rem 0 .5rem}
+p{margin:0 0 1.1rem}
+ul,ol{margin:0 0 1.2rem;padding-left:1.3rem}li{margin-bottom:.4rem}
+code{font:.87em ui-monospace,Menlo,monospace;background:var(--code-bg);
+padding:.1em .35em;border-radius:5px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.3rem}
+pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+blockquote{border-left:3px solid var(--accent);background:var(--accent-soft);
+border-radius:0 10px 10px 0;padding:.9rem 1.1rem;margin:0 0 1.3rem}
+blockquote p:last-child{margin:0}
+table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
+font:.92rem ui-sans-serif,system-ui,sans-serif}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);
+vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.8rem;letter-spacing:.04em;
+text-transform:uppercase}
+hr{border:0;border-top:1px solid var(--rule);margin:2.4rem 0}
+img{max-width:100%;border:1px solid var(--rule);border-radius:12px}
+footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;
+color:var(--muted);font-size:.9rem}
+@media(max-width:620px){body{font-size:16px}h1{font-size:1.6rem}.wrap{padding:0 1rem 3rem}}
+</style>
+</head>
+<body>
+<nav><div class="wrap"><a href="index.html">Overview</a><span class="sep">/</span><span class="sep">1. What a ticket is, and why it is a file</span></div></nav>
+<div class="wrap">
+<h1>1. What a ticket is, and why it is a file</h1>
+<p>This is the first of a series written while building, not afterwards. Each part explains one decision and what it cost, so you can follow the reasoning rather than only the result.</p>
+<h2>A directory of markdown files, not a database</h2>
+<p>Every ticket is one file:</p>
+<pre><code>data/T-0001-the-list-must-say-when-it-capped.md</code></pre>
+<p>Frontmatter carries the fields, the body carries the story:</p>
+<pre><code>---
+id: T-0001
+title: The list must say when it capped
+status: doing
+priority: P1
+area: api
+kind: bug
+assignee: floris
+labels: [good-first-issue]
+blocked_by: []
+created: 2026-09-14T18:55:01Z
+updated: 2026-09-14T19:02:44Z
+---
+
+## Goal
+A list that silently stops at fifty looks exactly like a list that found fifty,
+and the caller acts on the wrong one.
+
+## Work log
+- 2026-09-14 — measured: the cap was there, the answer did not mention it.</code></pre>
+<h3>Why not a database</h3>
+<p>The first version of this demo used <code>lib/store.wz</code>: fixed-size records, an append-only log and a snapshot. It worked and it was fast. It was also the wrong choice here, for reasons that only become obvious once you try to live with it:</p>
+<ul><li><strong>You cannot read your own data.</strong> <code>cat</code> gives you bytes. Every question about what is in there has to go through the server.</li><li><strong>A diff is meaningless.</strong> The log is binary, so version control can store it but not show you what changed. For a ticket system that is most of the value.</li><li><strong>A new field is a new record format.</strong> Fixed-size records mean the layout is the contract; adding <code>estimate</code> means old files no longer load.</li></ul>
+<p>A file per ticket gives up speed at scale and gains all of that back. The honest trade is in <a href="03-storage.html">03-storage.md</a>.</p>
+<h3>What we learned from running one</h3>
+<p>This format is not invented here — it is the one we use ourselves, and a few details in it are the result of getting them wrong first:</p>
+<p>**<code>area</code> and <code>kind</code> are two fields, not one.** <code>area</code> is <em>where</em> the work sits (api, ui, docs); <code>kind</code> is <em>what kind of work</em> it is (bug, gap, chore, research, doc). Collapsing them into a single &quot;type&quot; made the question <em>&quot;which bugs are open?&quot;</em> unanswerable without reading every ticket, because <code>area: api</code> holds a crash and a missing feature alike.</p>
+<p><strong>The work log is append-only prose, not a status field.</strong> Each line is dated and says what was found, decided or measured. A ticket is read by whoever picks it up next — possibly weeks later, possibly not the person who wrote it — and &quot;what did we already try?&quot; is the question a status field cannot answer.</p>
+<p><strong>A ticket is never done because it looks done.</strong> In our own system a ticket names its tests, and closing one runs them. That is out of scope here, but the shape it enforces is not: the body says what <em>done</em> looks like, in the ticket, before the work starts.</p>
+<p><strong>The filename carries the title.</strong> <code>T-0001-the-list-must-say-when-it-capped.md</code> is greppable and readable in a file listing, and the id at the front keeps it sortable. The title in the name is a copy of the title in the frontmatter; the frontmatter wins, and renaming is the server&#x27;s job.</p>
+<h2>What this buys the demo</h2>
+<p>The point of this demo is to show what it takes to write a service like this. Storage you can read with <code>cat</code> and diff in git is part of that: nothing here is hidden behind a format only the binary understands.</p>
+<p>Next: <a href="02-one-declaration-three-interfaces.html">2. One declaration, three interfaces</a>.</p>
+<footer>A demo of <a href="https://wantzel.com">Wantzel</a> &middot; </footer>
+</div>
+</body>
+</html>

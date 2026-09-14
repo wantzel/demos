@@ -1,0 +1,61 @@
+<header><h1>wantzel-tasks</h1>
+<span class="sub" id="count"></span>
+<span class="seg"><button id="vb" class="on" onclick="setview('board')">Board</button>
+<button id="vl" onclick="setview('list')">List</button></span>
+<button id="ag" class="tog" onclick="setagent(!showagent)" title="show or fold the entries written for agents">Clean</button>
+<span class="grow"></span>
+<span class="sub">one binary &middot; MCP, REST and this page on one port</span>
+</header>
+
+<div class="bar">
+<!-- The filters sit in their own scroller so that on a phone they slide sideways on one
+     row instead of wrapping onto four. New ticket stays outside it, always reachable. -->
+<div class="scroll">
+<input id="q" placeholder="search">
+<select id="fm"><option value="">every milestone</option></select>
+<select id="fa"><option value="">every area</option></select>
+<select id="fp"><option value="">every priority</option>
+<option>P0</option><option>P1</option><option>P2</option><option>P3</option></select>
+<select id="ff"><option value="">every direction</option>
+<option value="h2a">human to agent</option><option value="a2h">agent needs a human</option>
+<option value="a2a">agent to agent</option><option value="h2h">human to human</option></select>
+<select id="fk"><option value="">every kind</option><option>bug</option>
+<option>gap</option><option>chore</option><option>research</option><option>doc</option></select>
+</div>
+<button id="new" class="primary right" onclick="open_(null)">New ticket</button>
+</div>
+
+<div class="board" id="board"></div>
+<div class="list" id="list" style="display:none"></div>
+
+<!-- the panel: fields, then the record, then the conversation -->
+<div class="sheet" id="sheet" onclick="if(event.target===this)close_()">
+<div class="panel">
+<h3 id="ptitle">New ticket</h3>
+<div class="row"><label style="flex:1">title<input id="f_title" style="width:100%"></label></div>
+<div class="row">
+<label>status<select id="f_status"><option>todo</option><option>doing</option>
+<option>done</option></select></label>
+<label>priority<select id="f_priority"><option>P0</option><option>P1</option>
+<option selected>P2</option><option>P3</option></select></label>
+<label>kind<select id="f_kind"><option value="">--</option><option>bug</option>
+<option>gap</option><option>chore</option><option>research</option><option>doc</option></select></label>
+<label>area<input id="f_area" size="9" placeholder="general"></label>
+<label>flow<select id="f_flow"><option value="">--</option>
+<option value="h2a">h2a &middot; human to agent</option>
+<option value="a2h">a2h &middot; agent needs a human</option>
+<option value="a2a">a2a &middot; agent to agent</option>
+<option value="h2h">h2h &middot; human to human</option></select></label>
+<label>milestone<input id="f_milestone" size="9"></label>
+<label>assignee<input id="f_assignee" size="9"></label>
+</div>
+<div class="row"><label style="flex:1">labels, comma separated
+<input id="f_labels" style="width:100%"></label></div>
+<textarea id="f_body" placeholder="What, why, and what done looks like."></textarea>
+<div class="row" style="margin-top:.8rem">
+<button class="primary" onclick="save()">Save</button>
+<button onclick="close_()">Cancel</button>
+<button class="right" id="del" onclick="del()">Delete</button></div>
+
+<div id="extra"></div>
+</div></div>

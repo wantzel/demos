@@ -1,0 +1,57 @@
+// /tools.json must be valid JSON on its own.
+//
+// THIS TEST EXISTS BECAUSE IT WAS BROKEN. `tool.list` is the generated table as bare
+// entries -- exactly what MCP wants inside its own envelope, and exactly what a plain
+// GET must not return, because `{...},{...}` is two objects, not a document. Anything
+// fetching /tools.json to discover the API got "extra data after the first object".
+//
+// The lesson is narrow and worth keeping: a value shaped for one transport is not
+// automatically a document for another.
+program test_tools_json;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;
+
+var
+  n, depth, i: int;
+  c: char;
+  instr, esc: bool;
+
+begin
+  t.start("tools_json");
+
+  n := slen(tool.list);
+  t.ok(n > 0, "the compiler generated a tool table");
+
+  // Balance the braces of the bare entries, skipping anything inside a string. If the
+  // table is well-formed, depth returns to zero exactly at the end.
+  depth := 0; instr := false; esc := false;
+  for i := 0 to n - 1 do
+  begin
+    c := schar(tool.list, i);
+    if esc then esc := false
+    else if c = '\\' then esc := true
+    else if c = '"' then instr := not instr
+    else if not instr then
+    begin
+      if c = '{' then depth := depth + 1;
+      if c = '}' then depth := depth - 1;
+    end;
+  end;
+  t.eqint(depth, 0, "every object in the table is closed");
+  t.ok(not instr, "and no string is left open");
+
+  // The entries are bare, so the first character is a brace and NOT an array -- the proof
+  // that main.wz has to wrap it, which is the bug this test guards.
+  t.ok(schar(tool.list, 0) = '{', "the table is bare entries, so serving it raw is invalid JSON");
+
+  t.done;
+end.

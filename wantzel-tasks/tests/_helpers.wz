@@ -1,0 +1,150 @@
+// helpers.wz -- what every test needs, so a test file is only its own case.
+//
+// A test here is an ordinary program that calls the tools directly. No server, no port,
+// no HTTP client: a tool is a function, so a test is a program that calls it. That is why
+// these run in milliseconds and why a failure points at a line rather than a status code.
+//
+// Include this after the sources; it brings the `t.*` helpers and the data directory
+// handed in as the first argument.
+
+var
+  t.dir: array[0..1023] of char;
+  t.dirn: int;
+  t.fails: int;
+  t.checks: int;
+  t.name: array[0..63] of char;
+  t.namen: int;
+
+procedure t.say(s: str);
+begin
+  io.puts(STDERR, s);
+end;
+
+// A check that must hold. The message says what was expected, not what went wrong --
+// "newest first" is readable a year later; "assert failed at line 41" is not.
+procedure t.ok(cond: bool; what: str);
+begin
+  t.checks := t.checks + 1;
+  if not cond then
+  begin
+    t.fails := t.fails + 1;
+    io.puts(STDERR, "  FAIL  ");
+    io.puts(STDERR, what);
+    io.puts(STDERR, "\n");
+  end;
+end;
+
+procedure t.eqint(got: int; want: int; what: str);
+begin
+  t.checks := t.checks + 1;
+  if got <> want then
+  begin
+    t.fails := t.fails + 1;
+    io.puts(STDERR, "  FAIL  ");
+    io.puts(STDERR, what);
+    io.puts(STDERR, ": expected ");
+    io.putn(STDERR, want);
+    io.puts(STDERR, ", got ");
+    io.putn(STDERR, got);
+    io.puts(STDERR, "\n");
+  end;
+end;
+
+// Is this counted text equal to that literal?
+function t.istext(b: array of char; n: int; want: str): bool;
+var i: int;
+begin
+  if n <> slen(want) then return false;
+  for i := 0 to n - 1 do
+    if b[i] <> schar(want, i) then return false;
+  return true;
+end;
+
+procedure t.eqtext(b: array of char; n: int; want: str; what: str);
+begin
+  t.checks := t.checks + 1;
+  if not t.istext(b, n, want) then
+  begin
+    t.fails := t.fails + 1;
+    io.puts(STDERR, "  FAIL  ");
+    io.puts(STDERR, what);
+    io.puts(STDERR, ": expected \"");
+    io.puts(STDERR, want);
+    io.puts(STDERR, "\", got \"");
+    io.out(STDERR, addr(b[0]), n);
+    io.puts(STDERR, "\"\n");
+  end;
+end;
+
+// Take the data directory from the first argument and open it. Every test gets its own
+// empty directory from the runner, so one test can never see another's tickets -- which
+// is what makes them safe to run in any order.
+procedure t.start(name: str);
+var i: int;
+begin
+  t.fails := 0;
+  t.checks := 0;
+  t.namen := io.push(t.name, 0, name);
+  if argc() < 2 then
+  begin
+    io.puts(STDERR, "this test wants a data directory as its first argument\n");
+    halt(2);
+  end;
+  i := 0;
+  while true do
+  begin
+    if argch(1, i) = chr(0) then break;
+    t.dir[i] := argch(1, i);
+    i := i + 1;
+  end;
+  t.dirn := i;
+  tk.dirn := tk.set(tk.dir, TK.PATHLEN, t.dir, t.dirn);
+  tk.loadall;
+end;
+
+// Report and set the exit code. Printing the number of checks matters: a test that
+// silently stopped checking looks exactly like a test that passed.
+procedure t.done;
+begin
+  if t.fails > 0 then
+  begin
+    io.out(STDERR, addr(t.name[0]), t.namen);
+    io.puts(STDERR, ": ");
+    io.putn(STDERR, t.fails);
+    io.puts(STDERR, " of ");
+    io.putn(STDERR, t.checks);
+    io.puts(STDERR, " checks failed\n");
+    halt(1);
+  end;
+  io.out(STDOUT, addr(t.name[0]), t.namen);
+  io.puts(STDOUT, " ok (");
+  io.putn(STDOUT, t.checks);
+  io.puts(STDOUT, " checks)\n");
+end;
+
+// ---- making tickets without repeating yourself ------------------------------
+
+var
+  t.ca: array[0..0] of CreateArgs;
+  t.ua: array[0..0] of UpdateArgs;
+  t.ia: array[0..0] of IdArgs;
+  t.ka: array[0..0] of ClaimArgs;
+  t.la: array[0..0] of ListArgs;
+  t.sa: array[0..0] of StatsArgs;
+  t.one: array[0..0] of TicketOne;
+  t.lst: array[0..0] of TicketList;
+  t.st: array[0..0] of Stats;
+  t.rc: int;
+  t.lastid: array[0..TK.IDLEN - 1] of char;
+  t.lastidn: int;
+
+// Create a ticket and remember its id in t.lastid.
+procedure t.make(title: str);
+begin
+  CreateArgs.clear(t.ca);
+  t.ca[0].title_n := io.push(t.ca[0].title, 0, title);
+  TicketOne.clear(t.one);
+  t.rc := tool.create_ticket(t.ca, t.one);
+  t.ok(t.rc = 0, "create_ticket should accept a ticket with a title");
+  t.lastidn := tk.set(t.lastid, TK.IDLEN, t.one[0].ticket.id, t.one[0].ticket.id_n);
+end;

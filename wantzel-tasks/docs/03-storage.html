@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. Storage: a directory of markdown files</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#1a1815;--muted:#5e5850;--rule:#e3ded5;
+--code-bg:#f2efe9;--accent:#8a4218;--accent-soft:#f0e4da;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#15140f;--fg:#ecebe6;--muted:#a09a8f;
+--rule:#2e2b25;--code-bg:#1e1c18;--accent:#e0a473;--accent-soft:#2a211a;--card:#1e1c18}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+.wrap{max-width:44rem;margin:0 auto;padding:0 1.3rem 4rem}
+a{color:var(--accent)}
+nav{border-bottom:1px solid var(--rule);margin-bottom:2.4rem}
+nav .wrap{padding-top:1.1rem;padding-bottom:1.1rem;display:flex;gap:1rem;
+align-items:baseline;font:.9rem ui-sans-serif,system-ui,sans-serif}
+nav a{text-decoration:none;font-weight:600}
+nav .sep{color:var(--muted)}
+h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
+h1{font-size:2rem;margin:1.6rem 0 1.4rem}
+h2{font-size:1.4rem;margin:3rem 0 .8rem}
+h3{font-size:1.05rem;margin:1.9rem 0 .5rem}
+p{margin:0 0 1.1rem}
+ul,ol{margin:0 0 1.2rem;padding-left:1.3rem}li{margin-bottom:.4rem}
+code{font:.87em ui-monospace,Menlo,monospace;background:var(--code-bg);
+padding:.1em .35em;border-radius:5px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.3rem}
+pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+blockquote{border-left:3px solid var(--accent);background:var(--accent-soft);
+border-radius:0 10px 10px 0;padding:.9rem 1.1rem;margin:0 0 1.3rem}
+blockquote p:last-child{margin:0}
+table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
+font:.92rem ui-sans-serif,system-ui,sans-serif}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);
+vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.8rem;letter-spacing:.04em;
+text-transform:uppercase}
+hr{border:0;border-top:1px solid var(--rule);margin:2.4rem 0}
+img{max-width:100%;border:1px solid var(--rule);border-radius:12px}
+footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;
+color:var(--muted);font-size:.9rem}
+@media(max-width:620px){body{font-size:16px}h1{font-size:1.6rem}.wrap{padding:0 1rem 3rem}}
+</style>
+</head>
+<body>
+<nav><div class="wrap"><a href="index.html">Overview</a><span class="sep">/</span><span class="sep">3. Storage: a directory of markdown files</span></div></nav>
+<div class="wrap">
+<h1>3. Storage: a directory of markdown files</h1>
+<p>There is no database. <code>src/tickets_store.wz</code> reads and writes one file per ticket in a directory, and that directory — <code>data/</code> by default — is the entire persistence layer.</p>
+<h2>A real file</h2>
+<p>This is <code>data/T-0004-a-list-must-say-when-it-capped.md</code>, unedited:</p>
+<pre><code>---
+id: T-0004
+title: A list must say when it capped
+status: done
+priority: P0
+area: api
+kind: bug
+milestone: v0.1
+labels: [good-first-issue]
+blocked_by: []
+created: 2026-09-14T19:08:56Z
+updated: 2026-09-14T19:11:59Z
+---
+
+A list that silently stops at fifty looks exactly like a list that found fifty, and
+the caller acts on the wrong one.
+
+## Done when
+The answer carries returned, matched and truncated, and a test proves the three
+disagree when the cap bites.
+
+## Work log
+- Two real bugs surfaced while testing this: an id built with its padding in the
+  wrong place (trailing NUL bytes, so it sorted last), and an insertion that
+  conflated &quot;not full yet&quot; with &quot;beats the smallest kept value&quot;. Both caught by
+  tests/list_order.wz, which calls the tools directly with no server running.</code></pre>
+<p>Frontmatter between <code>---</code> lines carries the fixed fields — the ones declared on the <code>Ticket</code> schema in <code>schema.wz</code>. Everything after it is markdown: the body, and whatever headings the body happens to contain.</p>
+<h2>The honest trade-off</h2>
+<p>What this buys you, and what it costs, both follow directly from &quot;it&#x27;s a file&quot;:</p>
+<ul><li>**You can read it with <code>cat</code>.** No query, no client, no running server. What is in the ticket is what is in the file, in the format you are looking at right now.</li><li><strong>A diff is meaningful.</strong> Change a ticket&#x27;s status and <code>git diff</code> shows exactly that one line changing on that one file — which is most of what makes a ticket system usable inside version control at all.</li><li><strong>You can edit it by hand.</strong> Open the file, change a line, save it. The server picks it up the next time it starts, because reading a ticket back is the same parser the server itself uses.</li><li><strong>Listing gets slower as the directory grows.</strong> <code>tk.loadall</code> in <code>tickets_store.wz</code> reads and parses every file in the directory at startup, and <code>tool.list_tickets</code> walks every loaded row on every call — there is no index. The comment at the top of <code>query.wz</code> states the trade-off plainly: a few thousand rows is milliseconds, and the moment a measurement says otherwise is when an index is worth adding, not before.</li><li><strong>One process writes.</strong> Every ticket lives in memory after startup (<code>tk.all</code>), and a write updates the file and that in-memory copy together. A second process pointed at the same directory would have its own copy, and the first write from either side to go stale would silently overwrite the other&#x27;s without a lock — so this format needs a single writer, permanently, not just for now.</li></ul>
+<h2>What survives a hand edit</h2>
+<p>Reading a ticket back is <code>tk.parse</code> in <code>tickets_store.wz</code>, and it is written to be forgiving in one specific way: an unknown key in the frontmatter or an unknown <code>##</code> heading in the body does not fail the parse, and does not get dropped. <code>tk.readbody</code> only treats <code>## Work log</code> and <code>## Comments</code> as sections with their own meaning — a dated line under the first, a <code>### &lt;timestamp&gt; &lt;author&gt;</code> entry under the second. Anything else, including a <code>## Done when</code> heading someone adds by hand (as in the file above), stays exactly where it is, as part of the body. The next time the server writes that ticket back out, that heading is still there, because it was never parsed out of the body in the first place — it was never recognized as anything other than body text.</p>
+<p>This is a deliberate asymmetry: the server has a fixed, small vocabulary of things it understands structurally (the frontmatter fields, the two special headings), and everything else round-trips as opaque text rather than being rejected or silently discarded. A ticket someone extended by hand keeps what they added.</p>
+<h2>What it will not do</h2>
+<p>There is no migration story for the frontmatter format itself, and no partial write: <code> tk.write</code> builds the whole file in one buffer and writes it in a single call, so a crash mid-write leaves either the old file or the new one, never a half-written mix — but there is also no transaction spanning multiple files. A changed title changes the filename (the <code>id-slug.md</code> pattern), and <code>tool.update_ticket</code> writes the new file before removing the old one, in that order, so a failure between the two leaves the ticket present under its new name rather than gone.</p>
+<p>Next: <a href="04-the-ui.html">4. The UI</a>.</p>
+<footer>A demo of <a href="https://wantzel.com">Wantzel</a> &middot; </footer>
+</div>
+</body>
+</html>

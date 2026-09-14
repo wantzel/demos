@@ -1,0 +1,163 @@
+/* Light and dark both on :root, so no colour exists in only one of them. */
+:root{--bg:#fbfaf8;--card:#fff;--fg:#1a1815;--muted:#6b655c;--rule:#e6e1d8;
+--accent:#8a4218;--soft:#f3e9df;--drop:#f6ede3}
+@media(prefers-color-scheme:dark){:root{--bg:#15140f;--card:#1e1c18;--fg:#ecebe6;
+--muted:#9d978c;--rule:#2e2b25;--accent:#e0a473;--soft:#2a211a;--drop:#251e18}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:16px/1.65 Inter,"SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text",
+"Segoe UI",ui-sans-serif,system-ui,sans-serif;
+-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+letter-spacing:-.006em}
+
+header{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;
+padding:.9rem 1.3rem;border-bottom:1px solid var(--rule)}
+h1{font:600 1.05rem/1 ui-monospace,Menlo,monospace;margin:0;color:var(--accent)}
+.sub{color:var(--muted);font-size:.88rem}
+.grow{flex:1}
+
+/* the toggle: two views of the same tickets */
+.seg{display:flex;border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.seg button{border:0;border-radius:0;background:var(--card);padding:.4rem .85rem;
+font-size:.9rem;font-weight:600;color:var(--muted)}
+.seg button.on{background:var(--accent);color:var(--bg)}
+
+input,select,button,textarea{font:inherit;color:inherit;background:var(--card);
+border:1px solid var(--rule);border-radius:8px;padding:.45rem .65rem}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+button{cursor:pointer;font-weight:600}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+/* On a wide screen the scroller is an ordinary row; the phone rules below turn it
+   into something that slides. */
+.scroll{display:contents}
+#q{min-width:200px}
+.bar{display:flex;gap:.5rem;padding:.7rem 1.3rem;flex-wrap:wrap;align-items:center;
+border-bottom:1px solid var(--rule)}
+
+/* board */
+.board{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;
+padding:1.1rem 1.3rem 4rem;align-items:start}
+@media(max-width:760px){.board{grid-template-columns:1fr}}
+.col{background:transparent;border-radius:10px;padding:.35rem;min-height:120px}
+.col.over{background:var(--drop);outline:2px dashed var(--accent);outline-offset:-2px}
+.col h2{font:550 .82rem/1 inherit;letter-spacing:.055em;
+text-transform:uppercase;color:var(--muted);margin:.2rem .3rem .7rem;display:flex;gap:.5rem}
+.col h2 b{color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:11px;
+padding:.8rem .9rem;margin-bottom:.6rem;cursor:grab;user-select:none}
+.card:hover{border-color:var(--accent)}
+.card.drag{opacity:.4;cursor:grabbing}
+.card .t{font-weight:550;font-size:1.02rem;line-height:1.38;margin-bottom:.5rem;
+letter-spacing:-.011em}
+.meta{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;
+font:.78rem ui-monospace,Menlo,monospace;color:var(--muted)}
+.id{color:var(--accent);font-weight:600}
+.pill{border:1px solid var(--rule);border-radius:999px;padding:.08rem .5rem}
+.p0{background:var(--accent);border-color:var(--accent);color:var(--bg);font-weight:600}
+.lab{background:var(--soft);border-color:var(--soft)}
+.mark{color:var(--accent)}
+/* The direction badge. Muted on purpose: it should be findable at a glance without */
+/* competing with the title, because you scan for it rather than read it. */
+.flow{font-weight:600;letter-spacing:.02em}
+.f-h2a{color:#3f7d3f}.f-a2h{color:var(--accent)}
+.f-a2a{color:#6b6bb4}.f-h2h{color:var(--muted)}
+@media(prefers-color-scheme:dark){.f-h2a{color:#7fb37f}.f-a2a{color:#9d9de0}}
+.empty{color:var(--muted);font-size:.9rem;padding:.6rem .3rem}
+
+/* list */
+.list{padding:.6rem 1.3rem 4rem}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font:600 .78rem/1 ui-sans-serif,system-ui,sans-serif;
+letter-spacing:.11em;text-transform:uppercase;color:var(--muted);
+padding:.6rem .5rem;border-bottom:1px solid var(--rule)}
+td{padding:.7rem .55rem;border-bottom:1px solid var(--rule);vertical-align:top}
+tr.r{cursor:pointer}tr.r:hover td{background:var(--soft)}
+td.tt{font-weight:600}
+
+/* the ticket panel */
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;
+align-items:flex-start;justify-content:center;padding:3vh 1rem;overflow:auto}
+.sheet.on{display:flex}
+.panel{background:var(--bg);border:1px solid var(--rule);border-radius:12px;
+width:min(760px,100%);padding:1.2rem 1.3rem 1.4rem}
+.panel h3{margin:.1rem 0 1rem;font-size:1.3rem;line-height:1.3}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.65rem}
+.row label{display:flex;flex-direction:column;gap:.3rem;font-size:.8rem;color:var(--muted)}
+textarea{width:100%;min-height:130px;resize:vertical;
+font:14px/1.6 ui-monospace,Menlo,monospace}
+.right{margin-left:auto}
+h4{font:550 .82rem/1 inherit;letter-spacing:.055em;
+text-transform:uppercase;color:var(--accent);margin:1.3rem 0 .5rem}
+.entry{border-left:2px solid var(--rule);padding:.1rem 0 .1rem .7rem;margin-bottom:.6rem}
+.who{font:.8rem ui-monospace,Menlo,monospace;color:var(--muted);margin-bottom:.25rem}
+.entry p{margin:0;white-space:pre-wrap}
+ul.log{margin:0;padding-left:1.2rem;font-size:.95rem}
+ul.log li{margin-bottom:.25rem}
+
+/* The switch, and everything it governs. An agent entry is never hidden silently: it is
+   either shown, marked as agent, or counted by something you can click. */
+.tog{border:1px solid var(--rule);border-radius:8px;padding:.4rem .8rem;
+font-size:.9rem;font-weight:600;color:var(--muted);background:var(--card);cursor:pointer}
+.tog.on{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.fold{border:1px dashed var(--rule);border-radius:9px;padding:.5rem .7rem;margin-bottom:.8rem;
+color:var(--muted);font-size:.88rem;cursor:pointer}
+.fold:hover{border-color:var(--accent);color:var(--accent)}
+.ghost{color:var(--muted);opacity:.7}
+/* An agent entry, when shown, is legible but visibly not the human register. */
+.entry.ag{border-left-color:var(--accent);background:var(--soft);border-radius:0 8px 8px 0;
+padding-right:.6rem}
+li.ag{color:var(--muted)}
+.tag{border:1px solid var(--accent);border-radius:999px;padding:0 .4rem;
+font-size:.72rem;color:var(--accent)}
+.chk{display:flex;align-items:center;gap:.3rem;font-size:.82rem;color:var(--muted);
+white-space:nowrap}
+.chk input{width:auto}
+
+/* A checkbox keeps the browser's own colours unless told otherwise, so in dark it stays
+   a white square: the one control on the page that ignores the theme. */
+input[type=checkbox]{accent-color:var(--accent);width:1rem;height:1rem;margin:0}
+
+/* ---- the phone ---------------------------------------------------------------
+   Measured on a 420px screen: the header wrapped to three rows and the filter bar to
+   four, so five rows of chrome stood between opening the page and seeing a ticket.
+   Everything below is about getting to the first card -- and about keeping every action
+   reachable while doing it. */
+@media(max-width:620px){
+  header{gap:.45rem;padding:.6rem .8rem;flex-wrap:nowrap}
+  /* The tagline explains the project to a first-time reader on a desktop; on a phone it
+     is a whole row spent on something the reader is not there for. */
+  header .sub:last-of-type{display:none}
+  .grow{display:none}
+  h1{font-size:.92rem;flex:0 0 auto}
+  #count{display:none}
+  .seg,.tog{flex:0 0 auto}
+  .tog{padding:.4rem .6rem}
+  header button{font-size:.85rem;padding:.38rem .62rem}
+
+  /* One row that scrolls sideways beats four rows that wrap. "New ticket" is pinned
+     outside that scroller: an action you cannot reach is an action you do not have. */
+  .bar{flex-wrap:nowrap;padding:.55rem .8rem;gap:.45rem;align-items:center}
+  .scroll{display:flex;gap:.45rem;overflow-x:auto;-webkit-overflow-scrolling:touch;
+          scrollbar-width:none;flex:1 1 auto;min-width:0}
+  .scroll::-webkit-scrollbar{display:none}
+  .scroll>*{flex:0 0 auto}
+  #q{min-width:8rem;flex:1 0 8rem}
+  .bar select{max-width:8.5rem}
+  #new{flex:0 0 auto;padding:.45rem .7rem;font-size:.85rem}
+
+  /* A column heading at 1rem-plus reads as a page title and competes with the cards. */
+  .col h2{font-size:.72rem;letter-spacing:.07em}
+  .col{padding:.2rem}
+  .board{gap:.4rem;padding:.55rem .8rem}
+  .card{padding:.7rem .8rem;margin-bottom:.5rem}
+  .card .t{font-size:.98rem}
+  .meta{font-size:.74rem}
+
+  /* A sheet from the bottom is the phone idiom, and it keeps the top of the ticket
+     (its title) against the thumb rather than under the notch. */
+  .panel{border-radius:14px 14px 0 0;padding:1rem .85rem 1.3rem;
+         width:100%;max-height:92vh}
+  .row{gap:.5rem}
+  .row label{flex:1 1 7rem}
+  table{font-size:.86rem}
+}

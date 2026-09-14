@@ -1,0 +1,194 @@
+// next_ticket: the ordering rule lives here once, so every caller agrees what "next"
+// means -- not done, not someone else's, not blocked, highest priority first, oldest
+// first within a priority. "Nothing to do" comes back as found=false, not as a refusal.
+program test_next;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+var
+  na: array[0..0] of NextArgs;
+  nr: array[0..0] of NextResult;
+  setup: array[0..TK.IDLEN - 1] of char;   // the blocker's own id, kept aside
+  setupn: int;
+
+begin
+  t.start("next");
+
+  // ---- nothing in the backlog yet: an empty answer, not an error -------------
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-a");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.eqint(t.rc, 0, "next_ticket on an empty backlog is not an error");
+  t.ok(not nr[0].found, "and it says there is nothing to do");
+
+  // ---- priority: P0 before P2, regardless of creation order -------------------
+  t.make("A P2 ticket made first");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ua[0].priority_n := io.push(t.ua[0].priority, 0, "P2");
+  t.ua[0].priority_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "setting the fixture's priority to P2 is accepted");
+
+  t.make("A P0 ticket made second");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ua[0].priority_n := io.push(t.ua[0].priority, 0, "P0");
+  t.ua[0].priority_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "setting the fixture's priority to P0 is accepted");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-a");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.eqint(t.rc, 0, "next_ticket answers when work exists");
+  t.ok(nr[0].found, "and it found something");
+  t.eqtext(nr[0].ticket.title, nr[0].ticket.title_n, "A P0 ticket made second",
+           "P0 is preferred over P2 even though it was created later");
+
+  // ---- an oldest-first tie inside the same priority: claim it out of the way --
+  // Someone ELSE claims the P0 ticket, so it drops out of agent-a's own answers (a
+  // ticket assigned to the asker is still offered to them -- see below); the next call
+  // then has to choose between the two remaining P2 tickets by age.
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := tk.set(t.ka[0].id, TK.IDLEN, nr[0].ticket.id, nr[0].ticket.id_n);
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-x");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.eqint(t.rc, 0, "claiming the P0 ticket to move it out of the way is accepted");
+
+  t.make("A third ticket, also P2, made after the first");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ua[0].priority_n := io.push(t.ua[0].priority, 0, "P2");
+  t.ua[0].priority_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "setting the third fixture's priority to P2 is accepted");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-a");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(nr[0].found, "there is still P2 work to do");
+  t.eqtext(nr[0].ticket.title, nr[0].ticket.title_n, "A P2 ticket made first",
+           "the older P2 ticket comes before the younger one -- oldest first, not newest first");
+
+  // ---- assigned to someone else: skipped ---------------------------------------
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := tk.set(t.ka[0].id, TK.IDLEN, nr[0].ticket.id, nr[0].ticket.id_n);
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-b");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.eqint(t.rc, 0, "agent-b claims the older P2 ticket");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-a");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(nr[0].found, "there is still the third ticket left to do");
+  t.eqtext(nr[0].ticket.title, nr[0].ticket.title_n, "A third ticket, also P2, made after the first",
+           "next_ticket skips a ticket agent-b holds and offers the next one instead");
+
+  // agent-b asking sees its OWN claimed ticket again, because "not assigned to someone
+  // OTHER than who" allows your own claims through, and the rule never requires status
+  // todo -- next_ticket is also how an agent re-confirms what it already holds. Between
+  // agent-b's own ticket and the untouched third one, agent-b's is the older of the two
+  // it is allowed to see, so it wins the tie again.
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-b");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(nr[0].found, "agent-b still gets an answer");
+  t.eqtext(nr[0].ticket.title, nr[0].ticket.title_n, "A P2 ticket made first",
+           "and it is agent-b's own ticket -- an assignment to the asker is never filtered out");
+
+  // ---- a blocked ticket is skipped until its blocker is done ------------------
+  // The blocker is its own ticket, made first and kept todo; the blocked ticket points
+  // at it via blocked_by. Both start out as ordinary open tickets, so nothing here relies
+  // on a special status -- only the reference between them.
+  t.make("Setup work the next feature waits on");
+  setupn := tk.set(setup, TK.IDLEN, t.lastid, t.lastidn);
+
+  t.make("Blocked by unfinished setup");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ua[0].priority_n := io.push(t.ua[0].priority, 0, "P0");
+  t.ua[0].priority_ok := true;
+  t.ua[0].blocked_by_len[0] := tk.set(t.ua[0].blocked_by, TK.IDLEN, setup, setupn);
+  t.ua[0].blocked_by_n := 1;
+  t.ua[0].blocked_by_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "giving the fixture a blocker is accepted");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-c");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(nr[0].found, "agent-c still gets an answer");
+  t.ok(not t.istext(nr[0].ticket.title, nr[0].ticket.title_n, "Blocked by unfinished setup"),
+       "a P0 ticket with an open blocker is skipped even though it outranks everything else");
+
+  // ---- once the blocker is done, the same ticket is offered -------------------
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, setup, setupn);
+  t.ua[0].status_n := io.push(t.ua[0].status, 0, "done");
+  t.ua[0].status_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "finishing the blocker is accepted");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-c");
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(nr[0].found, "agent-c gets an answer once the blocker is done");
+  t.eqtext(nr[0].ticket.title, nr[0].ticket.title_n, "Blocked by unfinished setup",
+           "and it is the same ticket, now that nothing unfinished blocks it, back in front for its P0");
+
+  // ---- the flow filter: only tickets in that flow are considered --------------
+  t.make("An a2h ticket needing a human");
+  UpdateArgs.clear(t.ua);
+  t.ua[0].id_n := tk.set(t.ua[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ua[0].priority_n := io.push(t.ua[0].priority, 0, "P0");
+  t.ua[0].priority_ok := true;
+  t.ua[0].flow_n := io.push(t.ua[0].flow, 0, "a2h");
+  t.ua[0].flow_ok := true;
+  TicketOne.clear(t.one);
+  t.rc := tool.update_ticket(t.ua, t.one);
+  t.eqint(t.rc, 0, "giving the fixture a flow of a2h is accepted");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-d");
+  na[0].flow_n := io.push(na[0].flow, 0, "a2h");
+  na[0].flow_ok := true;
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(nr[0].found, "filtering by flow=a2h still finds the matching ticket");
+  t.eqtext(nr[0].ticket.title, nr[0].ticket.title_n, "An a2h ticket needing a human",
+           "even though higher-priority work exists outside that flow");
+
+  NextArgs.clear(na);
+  na[0].who_n := io.push(na[0].who, 0, "agent-d");
+  na[0].flow_n := io.push(na[0].flow, 0, "h2h");
+  na[0].flow_ok := true;
+  NextResult.clear(nr);
+  t.rc := tool.next_ticket(na, nr);
+  t.ok(not nr[0].found, "filtering by a flow with no matching open ticket returns an empty answer");
+
+  t.done;
+end.

@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wantzel-tasks — a ticket system for people and agents</title>
+<meta name="description" content="A kanban board, a list, a REST API and an MCP server — one 602 kB binary, no dependencies. Built for backlogs where most of the writing is done by machines.">
+<style>
+  /* The house palette. Everything in :root, light and dark, so no colour exists in only
+     one of them -- the rule that keeps a component from looking right in one theme and
+     broken in the other. */
+  :root{
+    --bg:#fbfaf8; --fg:#1a1815; --muted:#5e5850; --rule:#e3ded5;
+    --code-bg:#f2efe9; --accent:#8a4218; --accent-soft:#f0e4da; --card:#fff;
+  }
+  @media(prefers-color-scheme:dark){:root{
+    --bg:#15140f; --fg:#ecebe6; --muted:#a09a8f; --rule:#2e2b25;
+    --code-bg:#1e1c18; --accent:#e0a473; --accent-soft:#2a211a; --card:#1e1c18;
+  }}
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  /* Serif to read. This is a document, not an application: the demo's own UI uses the
+     sans stack, and the difference is deliberate. */
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+  .wrap{max-width:46rem;margin:0 auto;padding:0 1.3rem}
+  a{color:var(--accent)}
+  h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
+  h1{font-size:2.3rem;margin:0 0 .6rem}
+  h2{font-size:1.5rem;margin:3.6rem 0 .9rem}
+  h3{font-size:1.06rem;margin:2rem 0 .5rem}
+  p{margin:0 0 1.1rem}
+  code,kbd{font:.88em ui-monospace,Menlo,monospace;background:var(--code-bg);
+           padding:.1em .35em;border-radius:5px}
+  pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+      padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.2rem}
+  pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+  /* A long URL must wrap or it is unreadable; JSON must NOT, because wrapping splits
+     "assignee":"Piet" across two lines. So the wrap is opt-in, per block. */
+  pre.wrap code{white-space:pre-wrap;overflow-wrap:anywhere}
+
+  header{border-bottom:1px solid var(--rule);padding:3.4rem 0 2.6rem;margin-bottom:.4rem}
+  .eyebrow{font:600 .78rem/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--accent);margin:0 0 1rem}
+  .lede{font-size:1.2rem;color:var(--muted);margin:0 0 1.6rem}
+  .cta{display:flex;gap:.7rem;flex-wrap:wrap;align-items:center;
+       font:.9rem ui-sans-serif,system-ui,sans-serif}
+  .btn{display:inline-block;background:var(--accent);color:var(--bg);text-decoration:none;
+       font-weight:600;padding:.55rem .95rem;border-radius:8px}
+  .btn.ghost{background:none;color:var(--accent);border:1px solid var(--rule)}
+
+  /* A figure is a screenshot with a caption that says what to notice. Without the caption
+     it is decoration. */
+  figure{margin:1.6rem 0 2rem}
+  figure img{width:100%;display:block;border:1px solid var(--rule);border-radius:12px}
+  figcaption{font:.84rem/1.5 ui-sans-serif,system-ui,sans-serif;color:var(--muted);
+             padding-top:.6rem}
+  figcaption b{color:var(--fg)}
+  /* Screenshots of a third-party client. They are small dialogs and toasts, so they are
+     shown at their own size on a tinted plate rather than stretched to the column. */
+  .shot{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+        padding:.35rem;margin:0 0 .5rem;text-align:center}
+  .shot img{max-width:100%;border:0;border-radius:10px;display:block;margin:0 auto}
+  /* A screenshot of text only works at a size where the text can be read. Anything with
+     sentences in it goes full width; only two things that must be COMPARED go side by
+     side, and then only when they are small enough to survive it. */
+  .shot.wide{padding:.35rem}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  .pair figure{margin:0}
+  @media(max-width:700px){.pair{grid-template-columns:1fr}}
+
+  table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
+        font:.92rem ui-sans-serif,system-ui,sans-serif}
+  th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);
+        vertical-align:top}
+  th{font-weight:600;color:var(--muted);font-size:.8rem;letter-spacing:.04em;
+     text-transform:uppercase}
+  td:first-child{white-space:nowrap}
+  td b{font-variant-numeric:tabular-nums}
+
+  .note{border-left:3px solid var(--accent);background:var(--accent-soft);
+        border-radius:0 10px 10px 0;padding:.9rem 1.1rem;margin:0 0 1.4rem}
+  .note p:last-child{margin:0}
+  .note strong{color:var(--fg)}
+
+  ul.chapters{list-style:none;padding:0;margin:0 0 1rem}
+  ul.chapters li{border-bottom:1px solid var(--rule);padding:.75rem 0}
+  ul.chapters a{font-weight:600;text-decoration:none}
+  ul.chapters span{display:block;color:var(--muted);font-size:.92rem;padding-top:.15rem}
+
+  /* A chat transcript. Not a screenshot of a client -- a rendering of the exchange, so
+     it stays readable at any width and in both themes. */
+  .chat{border:1px solid var(--rule);border-radius:12px;overflow:hidden;margin:1.4rem 0 1.6rem;
+        font:.94rem/1.6 ui-sans-serif,system-ui,sans-serif}
+  .turn{padding:.85rem 1.05rem;border-bottom:1px solid var(--rule)}
+  .turn:last-child{border-bottom:0}
+  .turn.you{background:var(--code-bg)}
+  .who{font:600 .72rem/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.1em;
+       text-transform:uppercase;color:var(--muted);margin-bottom:.4rem}
+  .turn.you .who{color:var(--accent)}
+  .turn p{margin:0 0 .5rem}.turn p:last-child{margin:0}
+  .call{display:inline-block;font:.8rem ui-monospace,Menlo,monospace;color:var(--accent);
+        background:var(--accent-soft);border-radius:6px;padding:.15rem .5rem;margin:.15rem .25rem .15rem 0}
+  /* A terminal block. Rendered text rather than a screenshot: it stays sharp at any
+     zoom, follows the theme, and can be copied. */
+  .term{background:#15140f;border:1px solid var(--rule);border-radius:12px;
+        padding:1rem 1.15rem;overflow-x:auto;margin:0 0 1.3rem;
+        font:.8rem/1.75 ui-monospace,Menlo,monospace;color:#ecebe6}
+  .term .dim{color:#9d978c}
+  .term .ok{color:#e0a473;font-weight:600}
+  .term a{color:#e0a473;text-decoration:none}
+  .term a:hover{text-decoration:underline}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0 0 1.4rem}
+  .steps li{counter-increment:s;position:relative;padding:0 0 1rem 2.4rem}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:-.1rem;
+       width:1.65rem;height:1.65rem;border-radius:999px;background:var(--accent);
+       color:var(--bg);font:600 .82rem/1.65rem ui-sans-serif,system-ui,sans-serif;
+       text-align:center}
+  .steps pre{margin:.5rem 0 0}
+  footer{border-top:1px solid var(--rule);margin-top:4rem;padding:2rem 0 3rem;
+         color:var(--muted);font-size:.9rem}
+  /* Diagrams: inline SVG only, every colour from a variable, so they follow the theme. */
+  .fill-accent{fill:var(--accent)} .fill-soft{fill:var(--accent-soft)}
+  .fill-card{fill:var(--card)} .stroke-accent{stroke:var(--accent);fill:none}
+  .stroke-rule{stroke:var(--rule);fill:none}
+  .lbl{font:600 12px ui-sans-serif,system-ui,sans-serif;fill:var(--muted)}
+  .nm{font:700 15px ui-sans-serif,system-ui,sans-serif;fill:var(--fg)}
+  .nm.inv{fill:var(--bg)} .mono{font:600 11px ui-monospace,Menlo,monospace;fill:var(--muted)}
+  .mono.inv{fill:var(--bg)}
+  svg{width:100%;height:auto;display:block}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <p class="eyebrow">A Wantzel demo</p>
+    <h1>wantzel-tasks</h1>
+    <p class="lede">Your agents pick up work, claim it so no two collide, write down what they
+    found, and hand it back. You see a clean board — and can open the machine-level detail
+    whenever you want it.</p>
+    <p class="lede" style="font-size:1rem">A kanban board, a list, a REST API and an MCP
+    server. One 602&nbsp;kB binary, one port, no dependencies.</p>
+    <p class="cta">
+      <a class="btn" href="https://github.com/wantzel/demos">The source</a>
+      <a class="btn ghost" href="https://wantzel.com">About Wantzel</a>
+      <span style="color:var(--muted)">MIT</span>
+    </p>
+  </div>
+</header>
+
+<div class="wrap">
+
+<figure>
+  <img src="img/01-board-desktop-light.png" alt="The kanban board, showing this project's own backlog in three columns">
+  <figcaption><b>The board, showing its own backlog.</b> Every ticket here is a real
+  decision made while building this — including the ones that turned out to be wrong.</figcaption>
+</figure>
+
+<pre class="term"><span class="dim">$</span> ./wztrun
+building ... <span class="ok">32 ms</span>, 649K
+wantzel-tasks  42 tickets
+
+One server, four doors -- all on port 7777:
+
+  <span class="ok">http://127.0.0.1:7777/</span>                the board, in a browser
+  <span class="ok">http://127.0.0.1:7777/docs</span>            the API, generated from schema.wz
+  <span class="ok">http://127.0.0.1:7777/api/&lt;tool&gt;</span>      REST -- POST, arguments as JSON
+  <span class="ok">http://127.0.0.1:7777/mcp</span>             MCP -- POST, for Claude, Codex, Cursor</pre>
+
+<p style="color:var(--muted);margin-top:-.6rem">That is the entire startup: <b>one command,
+32&nbsp;milliseconds, no configuration.</b> Four ways into one process — and the board, your
+agent and <code>curl</code> are all looking at the same tickets.</p>
+
+<h2>The problem it was built for</h2>
+
+<p>Agent output is usually fine. There is just an enormous amount of it, arriving fast.</p>
+
+<p>A person investigating a bug writes one line: <em>“the cap was there, the answer did not
+mention it.”</em> An agent investigating the same bug writes the four hundred lines that led
+to that sentence — what it read, what it ruled out, the two approaches that failed. Both are
+worth having. But a week of this and the ticket that took a minute to read takes twenty, so
+people stop reading. The record still exists and nobody consults it, which is
+indistinguishable from not having one.</p>
+
+<p>The two usual answers both lose. Forbid agents to write, and you lose exactly the detail
+that made the ticket worth keeping. Let them write and tell people to skim, and the humans
+disengage.</p>
+
+<h2 id="practice">What this looks like in practice</h2>
+
+<p>Connect it once and the backlog becomes something your agent operates, rather than
+something you paste into a prompt. This is an unedited session against a running
+<code>wantzel-tasks</code> — two questions, two tool calls:</p>
+
+<figure class="shot">
+  <img src="img/connect/04-chat.png" style="max-width:1097px" alt="A chat session: asked how many tickets are open, the agent answers 10 open, 9 to do and 1 in progress, 33 done, 43 total. Asked for the next ticket, it returns T-0030 with its reasoning and offers to claim it.">
+</figure>
+<figcaption style="margin:-.2rem 0 1.4rem"><b>Every number there is live.</b>
+<code>ticket_stats</code> returned <code>{"total":43,"todo":9,"doing":1,"done":33,"p0":0}</code>
+and <code>next_ticket</code> returned T-0030 — P1, bug, area <code>api</code>, milestone
+v0.3. Nothing was staged for the screenshot.</figcaption>
+
+<p>The second answer is the one worth reading twice. The agent did not just report a title:
+it read the ticket <em>body</em>, found the three options the ticket lays out, and repeated
+the caveat another agent had left in the comments — <em>that it must check per-file mtimes,
+because an in-place edit does not touch the directory's timestamp</em>. Then it offered to
+claim it.</p>
+
+<p>That is the whole argument for the two registers. The reasoning it needed was written by
+a machine, for a machine, and it was still there to be found — while the board stayed
+readable for people, because that detail is folded away by default.</p>
+
+<h2>One sentence becomes a ticket</h2>
+
+<p>The exchange above was reading. This is writing — and it is the part that changes how a
+backlog gets used, because filing a ticket properly is exactly the chore people skip.</p>
+
+<figure class="shot">
+  <img src="img/connect/05-ask.png" style="max-width:1099px" alt="A message box containing: create a ticket for the agent of Piet to make a demo video of this product for the website.">
+</figure>
+<figcaption style="margin:-.2rem 0 1.4rem">One sentence, typed the way you would say it to a
+colleague.</figcaption>
+
+<figure class="shot">
+  <img src="img/connect/06-calls.png" style="max-width:1038px" alt="The client's trace showing List tickets, then Create ticket">
+</figure>
+<figcaption style="margin:-.2rem 0 1.6rem"><b>It looked before it wrote.</b> The trace shows
+<code>list_tickets</code> first — the agent searched for an existing ticket mentioning Piet
+before creating anything. Nobody told it to.</figcaption>
+
+<figure class="shot">
+  <img src="img/connect/07-result.png" style="max-width:1039px" alt="The agent reports it created T-0045, assigned to Piet, flow h2a, P2, area marketing, kind chore">
+</figure>
+<figcaption style="margin:-.2rem 0 1.6rem"><b>And it said what it chose.</b> T-0045,
+assigned to Piet, <code>flow: h2a</code>, P2, area marketing, kind chore — including the
+part it was unsure about: <em>"I set the assignee as 'Piet' to match how the existing ticket
+for him is labelled."</em></figcaption>
+
+<p>What came back is a complete ticket: a title stated as an outcome, a
+<em>What / Why / Done when</em> body, <code>flow: h2a</code>, and an assignee that matches
+the existing convention. The kind of ticket that gets written when someone has time, from a
+sentence typed when they do not.</p>
+
+<h2>What actually goes over the wire</h2>
+
+<p>Most integrations are described rather than shown. Here is the whole exchange behind
+that second answer, exactly as the client sent and received it.</p>
+
+<p>First the agent <em>looked</em>, before it wrote — and note the <code>audience</code>
+filter: it asked for the human register, not everything.</p>
+
+<figure class="shot">
+  <img src="img/connect/08-search-request.png" style="max-width:250px" alt="The request panel in the client: audience human, limit 5, query piet">
+</figure>
+<figcaption style="margin:-.2rem 0 1.2rem">The call as the client shows it — and what came
+back:</figcaption>
+
+<pre><code>{"tickets":[{"id":"T-0027","title":"A handoff is a first-class act…",
+  "priority":"P2","area":"api","kind":"gap","assignee":"Piet", …}],
+ "returned":1,"matched":1,"truncated":false}</code></pre>
+
+<p>That one call is why the ticket it then created says <code>"assignee": "Piet"</code> and
+not <code>"piet"</code> or <code>"Piet's agent"</code>: it found how the name was already
+spelled and matched it. Nobody told it to check.</p>
+
+<figure class="shot">
+  <img src="img/connect/10-create-payload.png" style="max-width:913px" alt="The raw create_ticket request as the client shows it: area marketing, assignee Piet, and the full body">
+</figure>
+<figcaption style="margin:-.2rem 0 1.4rem">The create call as the client renders it. What
+the server sent back:</figcaption>
+
+<pre><code>{"ticket":{"id":"T-0045","title":"A demo video of the product is ready for the website",
+  "status":"todo","priority":"P2","area":"marketing","kind":"chore","assignee":"Piet",
+  "flow":"h2a","labels":[],"blocked_by":[],
+  "created":"2026-09-14T20:44:13Z","updated":"2026-09-14T20:44:13Z",
+  "comments":[],"worklog":[]}}</code></pre>
+
+<p>Three things in that pair are worth pointing at:</p>
+
+<ul>
+  <li><strong>It chose <code>flow: h2a</code> itself.</strong> A person asking an agent to
+  do something — nobody in the conversation used the word.</li>
+  <li><strong>The response is the ticket, complete.</strong> Not an id to fetch afterwards:
+  every field, including the ones the server filled in.</li>
+  <li><strong>There is no envelope.</strong> No wrapper object, no status field, no
+  <code>data</code> key — the shape is exactly what <code>schema.wz</code> declares, which
+  is also exactly what <code>/tools.json</code> promised the client before it called.</li>
+</ul>
+
+<p>And it is a file you can read:</p>
+
+<pre><code>$ cat data/T-0045-a-demo-video-of-the-product-is-ready-for-the-website.md
+---
+id: T-0045
+title: A demo video of the product is ready for the website
+status: todo
+priority: P2
+area: marketing
+kind: chore
+assignee: Piet
+flow: h2a
+---
+
+Make a short demo video of the product for use on the website.
+…</code></pre>
+
+<h2>Connect it to your agent</h2>
+
+<p>Two ways, both about a minute.</p>
+
+<ol class="steps">
+  <li><strong>On this machine — over a pipe.</strong> No port, no network, no certificate.
+    Add it to your MCP client's config:
+    <pre><code>{
+  "mcpServers": {
+    "wantzel-tasks": {
+      "command": "/path/to/wantzel-tasks",
+      "args": ["--data", "/path/to/your/tickets", "--stdio"]
+    }
+  }
+}</code></pre></li>
+  <li><strong>From anywhere else</strong> — a hosted client, your phone, a colleague. The
+    server needs a public HTTPS address with a real certificate, which means a tunnel. One
+    flag does the whole thing:
+<pre class="term">
+<span class="dim">$</span> ./wztrun --tunnel
+building ... 31 <span class="ok">ms</span>, 649K
+
+wztrun: opening a public address ...
+wantzel-tasks  43 tickets
+
+One server, four doors -- all on port 7777:
+
+  http://127.0.0.1:7777/                the board, in a browser
+  http://127.0.0.1:7777/docs            the API, generated from schema.wz
+  http://127.0.0.1:7777/api/&lt;tool&gt;      REST -- POST, arguments as JSON
+  http://127.0.0.1:7777/mcp             MCP -- POST, for Claude, Codex, Cursor
+
+        the address appears below; it is new every run, so it is for a demo,
+        not for a connector you want to keep.
+
+  <span class="ok">https://down-compliant-regions-payday.trycloudflare.com</span>
+</pre>
+    <p style="margin:.2rem 0 .5rem">That address works immediately, from anywhere, with a
+    valid certificate — the board at <code>/</code> and MCP at <code>/mcp</code>. If
+    <code>cloudflared</code> is not installed, <code>--tunnel</code> offers to fetch it
+    first (one binary, ~40&nbsp;MB) rather than sending you to a download page.</p>
+    <p style="margin:0 0 .5rem">It is right for a demo and wrong for a connector you want to
+    keep, because <strong>the hostname is new every run</strong> and an MCP connector is
+    registered against one fixed URL. For something permanent, a <em>named</em> tunnel gives
+    you a fixed hostname on your own domain:</p>
+    <pre><code>cloudflared tunnel login
+cloudflared tunnel create wantzel-tasks
+cloudflared tunnel route dns wantzel-tasks tasks.example.com
+cloudflared tunnel run --url http://127.0.0.1:7777 wantzel-tasks
+
+# then add https://tasks.example.com/mcp as a custom connector</code></pre></li>
+  <li><strong>Check it answered.</strong> The first call any client makes is
+    <code>initialize</code>; if that works, everything does:
+    <pre><code>$ echo '{"jsonrpc":"2.0","id":1,"method":"initialize",
+  "params":{"protocolVersion":"2024-11-05","capabilities":{},
+  "clientInfo":{"name":"claude","version":"1"}}}' \
+  | ./bin/wantzel-tasks --data data --stdio
+
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05",
+ "capabilities":{"tools":{"listChanged":false}},
+ "serverInfo":{"name":"wantzel-tasks","version":"0.1.0"}}}</code></pre></li>
+</ol>
+
+<p>Your agent now has eleven tools. <code>GET /tools.json</code> lists them with a JSON
+Schema each — generated from the declaration, so it is never out of date.</p>
+
+<h2>Connected to a real client</h2>
+
+<p>None of the above is theory. These are the actual steps of pointing Claude Desktop at a
+running <code>wantzel-tasks</code>, over the tunnel that <code>./wztrun --tunnel</code>
+just opened.</p>
+
+<figure class="shot">
+  <img src="img/connect/01-add-connector.png" style="max-width:1021px" alt="The Add custom connector dialog, with the name Wantzel Tasks and the tunnel URL ending in /mcp">
+</figure>
+<figcaption style="margin:-.2rem 0 1.6rem"><b>One field.</b> A name, and the tunnel address
+with <code>/mcp</code> on the end. No API key, no OAuth app, no manifest to host — this
+server is authless, so the URL is the whole configuration.</figcaption>
+
+<div class="pair">
+  <figure class="shot">
+    <img src="img/connect/02-connecting.png" style="max-width:539px" alt="A toast reading Connecting to Wantzel Tasks">
+  </figure>
+  <figure class="shot">
+    <img src="img/connect/03-connected.png" style="max-width:539px" alt="A toast reading Connected to Wantzel Tasks">
+  </figure>
+</div>
+<figcaption style="margin:-.2rem 0 1.6rem"><b>The handshake.</b> Between those two toasts
+the client sent <code>initialize</code> and then <code>tools/list</code>, and the server
+answered with its name, its version and eleven tools — every one of them generated from
+<code>schema.wz</code>.</figcaption>
+
+<p>What is worth noticing is how little happened. There is no SDK in this project, no MCP
+library, no framework and no adapter layer: the <code>tools</code> block in
+<code>schema.wz</code> <em>is</em> the server. The client on the other end cannot tell it
+apart from any other MCP server, and it is a 602&nbsp;kB static binary that started in six
+milliseconds.</p>
+
+<p>From there it is just a conversation — <a href="#practice">the session above</a> is that
+same connection, a minute later.</p>
+
+<div class="note">
+  <p><strong>This is also where the demo broke once.</strong> The first time a client said
+  hello, the server died — <code>initialize</code> was the only handler reading two fields
+  the application never set, and no test touched it because every test calls the tools
+  directly. Twelve green tests and a working board, and the one call every client makes
+  first was fatal. It is <a href="06-built-for-agents.html">T-0031</a> in the backlog, with
+  the work log and the regression test that now guards it.</p>
+</div>
+
+<h2>One ticket, three doors, no sync</h2>
+
+<p>The claim is easy to make and hard to believe, so here it is as one sequence. A colleague
+files a ticket on the board. Your agent finds it over MCP, works it and reports back. You
+check the result with <code>curl</code>. Nothing synchronises, because there is nothing to
+synchronise — it is one process, one directory, one tool table.</p>
+
+<figure>
+  <svg viewBox="0 0 620 250" role="img" aria-label="A ticket created on the board is picked up by an agent over MCP and inspected over REST; all three act on the same process and the same directory of files.">
+    <rect x="14" y="16" width="150" height="54" rx="12" class="fill-soft stroke-accent" stroke-width="2"/>
+    <text x="30" y="40" class="nm">a colleague</text>
+    <text x="30" y="58" class="mono">the board</text>
+
+    <rect x="235" y="16" width="150" height="54" rx="12" class="fill-soft stroke-accent" stroke-width="2"/>
+    <text x="251" y="40" class="nm">your agent</text>
+    <text x="251" y="58" class="mono">MCP</text>
+
+    <rect x="456" y="16" width="150" height="54" rx="12" class="fill-soft stroke-accent" stroke-width="2"/>
+    <text x="472" y="40" class="nm">you</text>
+    <text x="472" y="58" class="mono">REST · curl</text>
+
+    <path d="M89 76 V116" class="stroke-accent" stroke-width="2.5" marker-end="url(#a3)"/>
+    <path d="M310 76 V116" class="stroke-accent" stroke-width="2.5" marker-end="url(#a3)"/>
+    <path d="M531 76 V116" class="stroke-accent" stroke-width="2.5" marker-end="url(#a3)"/>
+    <defs><marker id="a3" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="5" markerHeight="5" orient="auto"><path d="M1 1 L11 6 L1 11 z" class="fill-accent"/></marker></defs>
+
+    <rect x="14" y="122" width="592" height="52" rx="12" class="fill-accent"/>
+    <text x="30" y="146" class="nm inv">one binary, one port, one generated tool table</text>
+    <text x="30" y="164" class="mono inv">create_ticket · next_ticket · claim_ticket · log_work · …</text>
+
+    <path d="M310 180 V206" class="stroke-accent" stroke-width="2.5" marker-end="url(#a3)"/>
+    <rect x="160" y="206" width="300" height="38" rx="10" class="fill-card stroke-rule" stroke-width="2"/>
+    <text x="176" y="231" class="mono">data/T-0045-….md — one file per ticket</text>
+  </svg>
+  <figcaption>Three ways in, <b>one process and one directory</b>. The board has no private
+  route: dragging a card calls <code>update_ticket</code>, the same tool your agent calls.</figcaption>
+</figure>
+
+<div class="chat">
+  <div class="turn you">
+    <div class="who">A person — on the board</div>
+    <p>Files a bug: <strong>“A hand-edited file is not seen until a restart”</strong>,
+    sets it to <code>a2h</code> — it needs a decision before anyone writes code.</p>
+  </div>
+  <div class="turn">
+    <div class="who">An agent — over MCP</div>
+    <p><span class="call">next_ticket</span> returned it, and the agent read the body,
+    weighed the three options it listed, and left its analysis in the agent register:</p>
+    <p><em>“Recommending option 2 — stat on each read. Caveat: it must check per-file
+    mtimes, not the directory's, because an in-place edit does not touch the directory
+    timestamp.”</em></p>
+  </div>
+  <div class="turn you">
+    <div class="who">You — over REST</div>
+    <pre style="margin:.4rem 0 0"><code>$ curl -s -X POST localhost:7777/api/list_tickets \
+    -d '{"flow":"a2h"}' | jq '.tickets[].title'
+
+"A hand-edited file is not seen until a restart"</code></pre>
+    <p style="margin-top:.5rem">One call answers <em>what is waiting on me?</em> — and it is
+    the same data the board is drawing and the agent just wrote.</p>
+  </div>
+</div>
+</div>
+
+<h2>The four directions</h2>
+
+<p><code>flow</code> is a field, not a label, because it changes how a ticket is
+<em>read</em>. It is the single most useful thing on a mixed backlog: it separates work a
+machine is doing from work a machine is <strong>stuck on</strong>.</p>
+
+<table>
+  <tr><td><code>h2a</code></td><td><b>human → agent.</b> A person asked an agent to do
+    something. This is most of the backlog.</td></tr>
+  <tr><td><code>a2h</code></td><td><b>agent → human.</b> An agent needs a decision, an
+    approval or a credential. <em>It is blocking a machine that would otherwise still be
+    working</em> — a different urgency from a P0 nobody has started.</td></tr>
+  <tr><td><code>a2a</code></td><td><b>agent → agent.</b> One agent handed work to another.
+    You mostly do not need to read these.</td></tr>
+  <tr><td><code>h2h</code></td><td><b>human → human.</b> The way tickets have always
+    worked.</td></tr>
+</table>
+
+<p>Neither <code>status</code> nor <code>priority</code> can express this:
+<code>todo</code> cannot distinguish “not started” from “stopped, waiting for a person”. The
+arrow on each card is the meaning, so there is nothing to learn.</p>
+
+<figure>
+  <img src="img/07-filter-flow-desktop-light.png" alt="The board filtered to a2h, showing only tickets where an agent needs a human">
+  <figcaption>Filtered to <code>a2h</code>: <b>every place your agents are blocked on
+  you.</b> On a busy backlog this is the first thing you look at in the morning.</figcaption>
+</figure>
+
+<h2>Two registers, and the reader picks</h2>
+
+<p>Every comment and every work log line carries an <code>audience</code>:
+<code>human</code> (short, written for a person) or <code>agent</code> (complete, written
+for a machine). It is per <em>entry</em>, not per ticket, because one ticket interleaves
+both. The default is <code>human</code> — a field that defaults to the noisy value fills up
+with noise on its own.</p>
+
+<figure>
+  <svg viewBox="0 0 620 210" role="img" aria-label="One ticket holds both a short human comment and a long agent analysis; a single switch folds the agent entries away, and a counted line says how many are hidden.">
+    <rect x="8" y="14" width="250" height="182" rx="12" class="fill-card stroke-rule" stroke-width="2"/>
+    <text x="24" y="42" class="nm">One ticket</text>
+    <rect x="24" y="56" width="218" height="26" rx="7" class="fill-soft"/>
+    <text x="34" y="74" class="mono">floris · keep it short</text>
+    <rect x="24" y="90" width="218" height="46" rx="7" class="fill-soft"/>
+    <text x="34" y="108" class="mono">agent-a · considered a per-ticket</text>
+    <text x="34" y="124" class="mono">flag and rejected it because…</text>
+    <rect x="24" y="144" width="218" height="26" rx="7" class="fill-soft"/>
+    <text x="34" y="162" class="mono">floris · ja, per entry</text>
+
+    <path d="M266 105 H352" class="stroke-accent" stroke-width="2.5" marker-end="url(#a1)"/>
+    <text x="278" y="96" class="lbl">Clean</text>
+    <defs><marker id="a1" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="5" markerHeight="5" orient="auto"><path d="M1 1 L11 6 L1 11 z" class="fill-accent"/></marker></defs>
+
+    <rect x="362" y="14" width="250" height="182" rx="12" class="fill-accent"/>
+    <text x="378" y="42" class="nm inv">What you read</text>
+    <rect x="378" y="56" width="218" height="26" rx="7" class="fill-card" opacity=".92"/>
+    <text x="388" y="74" class="mono">floris · keep it short</text>
+    <rect x="378" y="90" width="218" height="26" rx="7" class="fill-card" opacity=".92"/>
+    <text x="388" y="108" class="mono">floris · ja, per entry</text>
+    <rect x="378" y="126" width="218" height="28" rx="7" class="fill-card" opacity=".35"
+          stroke-dasharray="4 4" stroke="var(--bg)" stroke-width="1.5"/>
+    <text x="388" y="145" class="mono inv">1 agent entry hidden · show</text>
+    <text x="378" y="178" class="mono inv">nothing is dropped, only folded</text>
+  </svg>
+  <figcaption>The agent's reasoning is never deleted — it is folded, and the fold
+  <b>says how much it is holding</b>. A clean view that could quietly omit things is a view
+  you learn not to trust, and then you turn it off for good.</figcaption>
+</figure>
+
+<p>One switch in the top bar — <strong>Clean</strong> / <strong>Everything</strong> — flips
+every view at once and is remembered, so someone who wants clean tickets sets it once.</p>
+
+<figure>
+  <img src="img/03-ticket-clean-desktop-light.png" alt="A ticket in the clean view: one work log line, one human comment, and a line reading three agent entries hidden">
+  <figcaption><b>Clean.</b> What a person wrote, plus a counted line for what is folded —
+  <em>“3 agent entries hidden · show”</em>. The count is the button.</figcaption>
+</figure>
+
+<figure>
+  <img src="img/04-ticket-everything-desktop-light.png" alt="The same ticket with agent entries shown: two extra work log lines and two tinted comments tagged agent">
+  <figcaption><b>Everything.</b> The same ticket, one click later. The agent's full reasoning
+  sits in place, tinted and tagged <code>agent</code>, so you always know which register you
+  are reading — and <b>nothing was ever deleted to get the view above</b>.</figcaption>
+</figure>
+
+<p>Writing works the same way: a <em>for agents</em> checkbox beside the comment and work log
+boxes, so a person can leave machine-level detail without cluttering the human thread. Over
+the API it is one field — <code>audience: "agent"</code> — and in the file it is a
+<code>[agent]</code> marker on the entry.</p>
+
+<h2>Two agents cannot take the same ticket</h2>
+
+<p>Two agents reading the same backlog pick the same top ticket, because they are looking at
+the same order and they are both right. With people a standup resolves it; with agents it is
+two hours of duplicated work, discovered at merge time.</p>
+
+<p><code>update_ticket</code> cannot fix this — read-then-write leaves a gap, and the gap is
+exactly where both agents decide to go. <code>claim_ticket</code> is a conditional write: it
+sets assignee and status in one call and <strong>refuses</strong> if the ticket is already
+held.</p>
+
+<pre><code>POST /api/claim_ticket  {"id":"T-0024","who":"agent-a"}
+  → {"ticket": {…, "assignee":"agent-a", "status":"doing"}}
+
+POST /api/claim_ticket  {"id":"T-0024","who":"agent-b"}
+  → {"detail":"already claimed"}</code></pre>
+
+<p>The refusal is the useful half: agent-b learns immediately and takes the next ticket.
+<code>next_ticket</code> then answers “what should I pick up?” in one call, with the
+ordering rule on the server so every agent agrees what <em>next</em> means.</p>
+
+<h2>One declaration, three interfaces</h2>
+
+<p><code>src/schema.wz</code> is 246 lines and is the entire API. The compiler turns it into
+the JSON parser and writer for every shape, the MCP tool table, the argument checking, the
+REST routes, and 30&nbsp;kB of JSON Schema. None of that is in the repository, and none of it
+can drift from the declaration — because it does not exist separately from it.</p>
+
+<figure>
+  <svg viewBox="0 0 620 200" role="img" aria-label="One schema file compiles into three interfaces: a REST API, an MCP server and the web page, all served on one port.">
+    <rect x="8" y="66" width="168" height="66" rx="12" class="fill-soft stroke-accent" stroke-width="2"/>
+    <text x="26" y="94" class="nm">schema.wz</text>
+    <text x="26" y="114" class="mono">246 lines you write</text>
+
+    <path d="M182 99 H252" class="stroke-accent" stroke-width="2.5" marker-end="url(#a2)"/>
+    <text x="190" y="90" class="lbl">compile</text>
+    <text x="190" y="122" class="lbl">30 ms</text>
+    <defs><marker id="a2" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="5" markerHeight="5" orient="auto"><path d="M1 1 L11 6 L1 11 z" class="fill-accent"/></marker></defs>
+
+    <rect x="258" y="66" width="120" height="66" rx="12" class="fill-accent"/>
+    <text x="274" y="94" class="nm inv">one binary</text>
+    <text x="274" y="114" class="mono inv">602 kB, 0 deps</text>
+
+    <path d="M384 99 H444" class="stroke-accent" stroke-width="2.5" marker-end="url(#a2)"/>
+
+    <rect x="450" y="14" width="162" height="48" rx="12" class="fill-card stroke-rule" stroke-width="2"/>
+    <text x="466" y="36" class="nm">the board</text>
+    <text x="466" y="52" class="mono">GET /</text>
+    <rect x="450" y="72" width="162" height="48" rx="12" class="fill-card stroke-rule" stroke-width="2"/>
+    <text x="466" y="94" class="nm">REST</text>
+    <text x="466" y="110" class="mono">POST /api/&lt;tool&gt;</text>
+    <rect x="450" y="130" width="162" height="48" rx="12" class="fill-card stroke-rule" stroke-width="2"/>
+    <text x="466" y="152" class="nm">MCP</text>
+    <text x="466" y="168" class="mono">POST /mcp</text>
+  </svg>
+  <figcaption>Not three servers — <b>three doors into the same generated tool table</b>, on
+  one port. Dragging a card calls <code>update_ticket</code>, exactly as an agent would: the
+  page has no private route.</figcaption>
+</figure>
+
+<h2>An API reference nobody wrote</h2>
+
+<p>The demo serves its own reference at <code>/docs</code>. It is not a document beside the
+code — it renders itself from <code>/tools.json</code>, the same generated table your MCP
+client reads, so it cannot be out of date. Add a field to <code>schema.wz</code> and it
+appears here on the next build.</p>
+
+<figure>
+  <img src="img/08-api-docs-desktop-light.png" alt="The generated API reference, showing create_ticket with its arguments, types, limits and a runnable curl example">
+  <figcaption>Every field, type, length limit and description comes from the declaration.
+  <b>The curl example is built from the schema's own required fields</b>, so it runs.</figcaption>
+</figure>
+
+<h2>Your tickets are files</h2>
+
+<p>One markdown file per ticket: frontmatter for the fields, the body for the story. You can
+read one with <code>cat</code>, edit it in an editor, and put the directory in git — where a
+change shows up as a diff on the ticket that changed.</p>
+
+<pre><code>---
+id: T-0023
+title: Two registers: short for people, complete for agents
+status: done
+priority: P0
+flow: h2a
+---
+
+## Work log
+- 2026-09-14 - chose audience per entry, default human
+- [agent] 2026-09-14 - parser reads [agent] from the ### header
+
+## Comments
+
+### 2026-09-14T19:35:13Z floris
+Keep it short. The switch is the product.
+
+### 2026-09-14T19:35:13Z agent-a [agent]
+Considered a per-ticket verbose flag and rejected it: one ticket
+interleaves both registers, so the split must be per entry.</code></pre>
+
+<p>The <code>[agent]</code> marker is the register, in the file. A ticket written by hand
+with no marker loads as <code>human</code>, so hand-written files keep working.</p>
+
+<h2>The numbers</h2>
+
+<p>Measured, not estimated. <code>wztrun</code> prints the compile time on every build, so
+the first row is one you will see for yourself.</p>
+
+<table>
+  <tr><th>what</th><th>measured</th></tr>
+  <tr><td>compile, whole application</td><td><b>30 ms</b> — ~4,300 lines including the library</td></tr>
+  <tr><td>startup to first answered request</td><td><b>6 ms</b>, having read every ticket file</td></tr>
+  <tr><td><code>ticket_stats</code></td><td><b>0.15 ms</b> — ~6,600 requests/second</td></tr>
+  <tr><td><code>list_tickets</code>, full JSON</td><td><b>0.41 ms</b> — ~2,400 requests/second</td></tr>
+  <tr><td>the whole page, <code>GET /</code></td><td>20 kB in <b>0.5 ms</b></td></tr>
+  <tr><td>resident memory</td><td><b>3.3 MB</b></td></tr>
+  <tr><td>binary</td><td><b>602 kB</b>, statically linked</td></tr>
+  <tr><td>dependencies</td><td><b>zero</b>, at build time and at run time</td></tr>
+</table>
+
+<div class="note">
+  <p><strong>The compile time is the one that changes how you work.</strong> An agent's loop
+  is write, compile, read the error, fix. At 30&nbsp;ms that loop costs nothing, so the
+  compiler becomes the thing that checks your work rather than the thing you wait for. That
+  is why a strict language is <em>easier</em> to generate than a permissive one.</p>
+</div>
+
+<h2>The rest of it works</h2>
+
+<p>Three statuses, not five. Milestones group work, labels tag it, <code>blocked_by</code>
+links it. A work log and comments, both append-only — a record you can tidy up afterwards is
+not a record. <code>area</code> and <code>kind</code> stay separate, because merging <em>where
+the work sits</em> with <em>what kind it is</em> makes “which bugs are open?” unanswerable.</p>
+
+<p>And the ordinary things are done: it works on a phone, and it follows your theme.</p>
+
+<div class="pair">
+  <figure>
+    <img src="img/01-board-phone-light.png" alt="The board on a 420 pixel wide screen">
+    <figcaption>Two rows of chrome, then tickets.</figcaption>
+  </figure>
+  <figure>
+    <img src="img/01-board-phone-dark.png" alt="The same board in dark mode">
+    <figcaption>Every colour defined once, so both themes are the same code.</figcaption>
+  </figure>
+</div>
+
+<h2>How early this is</h2>
+
+<p>The compiler reached <strong>v0.1.0 on 13 September 2026</strong>. This application was
+built the <strong>next day</strong>, against v0.1.2 — a compiler one day past its first
+tagged release, and nowhere near finished.</p>
+
+<p>That is the part worth sitting with. Not that a mature toolchain let an agent build
+something, but that a <strong>one-day-old</strong> one already did: a real ticket system
+with three interfaces, its own tests and its own documentation, in about three hours.</p>
+
+<p>What that says is less about this application than about the shape of the language. The
+things that make an agent productive — a compile measured in milliseconds, errors that point
+at a line, one way to express a thing — were there from the first release, because they are
+design decisions rather than optimisations that arrive later.</p>
+
+<div class="note">
+  <p><strong>And it gets better from here.</strong> The memory model is a choice, not a gap:
+  no heap, no pointers, no garbage collector, every array bound-checked. But the compiler,
+  the standard library and the tooling around them are young. Code generation, the runtime,
+  the breadth of <code>lib/</code>, and how much the compiler can tell you when something is
+  wrong all have a long way to go — and what production-grade software needs from a language
+  this age is something we expect to learn by building with it, not by designing it up
+  front.</p>
+</div>
+
+<p>If this is what one day past v0.1 looks like, the interesting question is what the same
+three hours buy at v0.5.</p>
+
+<h2>How it was built</h2>
+
+<p>This whole project — the tickets, the tests, the application, the frontend and these
+documents — was written by <strong>Claude Code</strong> driving the <strong>Wantzel
+compiler</strong>, from an empty directory, in about three hours on 14 September 2026. A
+person set the direction and made the decisions; no line of it was typed by hand.</p>
+
+<p>It was not frictionless, and the record is in the backlog: two bugs — a crash on the
+first call every MCP client makes, and <code>/tools.json</code> serving invalid JSON — got
+past a green test suite and were found by <em>using</em> the thing. Both are tickets with a
+work log, and both now have a test. That is the honest version, and it is more useful than a
+clean one.</p>
+
+<h2>Read the whole thing</h2>
+
+<p>Six chapters, written while building rather than afterwards. Each explains one decision
+and what it cost.</p>
+
+<ul class="chapters">
+  <li><a href="01-what-a-ticket-is.html">1. What a ticket is, and why it is a file</a>
+    <span>A directory of markdown files, not a database — and what that buys.</span></li>
+  <li><a href="02-one-declaration-three-interfaces.html">2. One declaration, three interfaces</a>
+    <span>What the compiler generates from <code>schema.wz</code>, and why it cannot drift.</span></li>
+  <li><a href="03-storage.html">3. Storage: a ticket is a file</a>
+    <span>Writing and parsing markdown, and keeping hand edits legitimate.</span></li>
+  <li><a href="04-the-ui.html">4. The UI: real files, compiled into the binary</a>
+    <span>Why the frontend stopped being escaped strings — 351 lines became 34.</span></li>
+  <li><a href="05-testing.html">5. Testing: a test is a program that calls the tools</a>
+    <span>No framework, no server, no port. And the two bugs that still got through.</span></li>
+  <li><a href="06-built-for-agents.html">6. Built for agents, and what that actually changes</a>
+    <span>The volume problem, the two registers, claiming, and what we deliberately did not build.</span></li>
+</ul>
+
+<h2>Try it</h2>
+
+<pre><code>git clone https://github.com/wantzel/demos
+cd demos/wantzel-tasks
+./wztrun                 # build, then http://127.0.0.1:7777/
+./wztrun --stdio         # the same MCP over a pipe, for an agent on this machine
+./wzttest                # 12 test files, ~170 checks</code></pre>
+
+<p>That is the whole installation: no package manager, no runtime, no container, no
+database. Built and tested with Wantzel&nbsp;0.1.2.</p>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p><b>Wantzel</b> is a strictly typed, procedural, compiled language with zero
+    dependencies, designed for a world where a lot of code is written by machines.</p>
+    <p><a href="https://wantzel.com">wantzel.com</a> &middot;
+    <a href="https://github.com/wantzel/wantzel">the compiler's source</a> &middot;
+    <a href="https://github.com/wantzel/demos">this demo, and the others</a> &middot;
+    <a href="mailto:floris@wantzel.com">floris@wantzel.com</a></p>
+    <p>MIT, like the compiler.</p>
+  </div>
+</footer>
+
+</body>
+</html>

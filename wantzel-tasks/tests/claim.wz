@@ -1,0 +1,82 @@
+// claim_ticket / release_ticket: the conditional write that closes the gap
+// update_ticket leaves between reading who holds a ticket and writing who does.
+program test_claim;
+
+include "json.wz";
+include "mcphttp.wz";
+include "router.wz";
+include "../src/schema.wz";
+include "../src/tickets.wz";
+include "../src/query.wz";
+include "tools.wz";
+include "_helpers.wz";
+
+procedure app.request; begin end;   // lib/http.wz leaves this open; a test serves nothing
+
+begin
+  t.start("claim");
+
+  // ---- the first claim is accepted, and sets both fields in one call ---------
+  t.make("Ticket for the first agent");
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := tk.set(t.ka[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-a");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.eqint(t.rc, 0, "the first claim on an unassigned ticket is accepted");
+  t.eqtext(t.one[0].ticket.assignee, t.one[0].ticket.assignee_n, "agent-a", "and the ticket is assigned to the claimer");
+  t.eqtext(t.one[0].ticket.status, t.one[0].ticket.status_n, "doing", "and moved to doing in the same call");
+
+  // ---- a second agent is refused by name, not left to find out later ---------
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := tk.set(t.ka[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-b");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.ok(t.rc <> 0, "a second agent claiming an already-held ticket is refused");
+
+  // ---- and the ticket still belongs to whoever claimed it first --------------
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.get_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "the ticket is still findable after the refused claim");
+  t.eqtext(t.one[0].ticket.assignee, t.one[0].ticket.assignee_n, "agent-a",
+           "the refused claim did not move the assignee to agent-b");
+
+  // ---- re-claiming by the holder is idempotent, not a race lost to yourself --
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := tk.set(t.ka[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-a");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.eqint(t.rc, 0, "the same agent claiming its own ticket again succeeds");
+  t.eqtext(t.one[0].ticket.assignee, t.one[0].ticket.assignee_n, "agent-a", "and it is still assigned to agent-a");
+
+  // ---- released, the ticket goes back to todo and is claimable again ---------
+  IdArgs.clear(t.ia);
+  t.ia[0].id_n := tk.set(t.ia[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  TicketOne.clear(t.one);
+  t.rc := tool.release_ticket(t.ia, t.one);
+  t.eqint(t.rc, 0, "release_ticket accepts a claimed ticket");
+  t.ok(not t.one[0].ticket.assignee_ok, "and clears the assignee");
+  t.eqtext(t.one[0].ticket.status, t.one[0].ticket.status_n, "todo", "and puts the ticket back in todo");
+
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := tk.set(t.ka[0].id, TK.IDLEN, t.lastid, t.lastidn);
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-b");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.eqint(t.rc, 0, "a released ticket can be claimed by someone else");
+  t.eqtext(t.one[0].ticket.assignee, t.one[0].ticket.assignee_n, "agent-b", "this time it goes to agent-b");
+
+  // ---- a missing id is refused, the same way get_ticket refuses one ----------
+  ClaimArgs.clear(t.ka);
+  t.ka[0].id_n := io.push(t.ka[0].id, 0, "T-9999");
+  t.ka[0].who_n := io.push(t.ka[0].who, 0, "agent-a");
+  TicketOne.clear(t.one);
+  t.rc := tool.claim_ticket(t.ka, t.one);
+  t.ok(t.rc <> 0, "claiming an id that does not exist is refused");
+
+  t.done;
+end.

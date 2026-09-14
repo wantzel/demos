@@ -1,0 +1,656 @@
+// tickets_store.wz -- a ticket is a file.
+//
+//   data/T-0001-the-list-must-say-when-it-capped.md
+//
+// Frontmatter for the fields, markdown for the story. You can read a ticket with `cat`,
+// edit one in an editor, and put the directory in git -- where a change shows up as a
+// diff on the ticket that changed, which is most of what makes a ticket system useful.
+//
+// What it costs, plainly: listing means reading the directory and parsing what is in it,
+// so this is slower than an index and will stay that way. At the size a team's backlog
+// actually reaches -- hundreds, maybe a few thousand -- that is milliseconds. When it is
+// not, the answer is a cache, and the files stay the source of truth.
+//
+// One process writes. Two servers on the same directory would need a lock around
+// read-modify-write, and that is a different program.
+
+include "io.wz";
+include "fs.wz";
+include "time.wz";
+
+const
+  TK.MAXOPEN   = 2000;        // tickets held in memory at once
+  TK.FILEBUF   = 65536;       // largest ticket file read or written
+  TK.PATHLEN   = 1024;
+
+  TK.IDLEN     = 16;
+  TK.TITLELEN  = 200;
+  TK.BODYLEN   = 8000;
+  TK.SHORTLEN  = 24;          // status, priority, area, kind
+  TK.WHOLEN    = 64;
+  TK.FLOWLEN   = 16;          // h2a, a2h, a2a, h2h
+  TK.MSLEN     = 48;          // milestone: a release, a sprint, a theme
+  TK.COMMENTS  = 32;          // comments kept per ticket
+  TK.CTEXTLEN  = 2000;
+  TK.LOGS      = 32;          // work log lines per ticket
+  TK.LOGLEN    = 500;
+  TK.AUDLEN    = 8;           // "human" or "agent"
+  TK.LABELS    = 8;
+  TK.LABELLEN  = 24;
+  TK.BLOCKS    = 8;
+  TK.TSLEN     = 24;
+
+type
+  // One ticket in memory. The same shape the file holds, so reading and writing are
+  // each one routine and there is no third representation to keep in step.
+  TicketRec = record
+    idn: int;       id:      array[0..TK.IDLEN - 1] of char;
+    titlen: int;    title:   array[0..TK.TITLELEN - 1] of char;
+    bodyn: int;     body:    array[0..TK.BODYLEN - 1] of char;
+    statusn: int;   status:  array[0..TK.SHORTLEN - 1] of char;
+    prion: int;     prio:    array[0..TK.SHORTLEN - 1] of char;
+    arean: int;     area:    array[0..TK.SHORTLEN - 1] of char;
+    kindn: int;     kind:    array[0..TK.SHORTLEN - 1] of char;
+    whon: int;      who:     array[0..TK.WHOLEN - 1] of char;
+    msn: int;       ms:      array[0..TK.MSLEN - 1] of char;
+    flown: int;     flow:    array[0..TK.FLOWLEN - 1] of char;
+    nlabels: int;   labeln:  array[0..TK.LABELS - 1] of int;
+                    label:   array[0..TK.LABELS * TK.LABELLEN - 1] of char;
+    nblocks: int;   blockn:  array[0..TK.BLOCKS - 1] of int;
+                    block:   array[0..TK.BLOCKS * TK.IDLEN - 1] of char;
+    createdn: int;  created: array[0..TK.TSLEN - 1] of char;
+    updatedn: int;  updated: array[0..TK.TSLEN - 1] of char;
+    // The conversation and the record, both append-only. They live in the file under
+    // their own headings, so the whole ticket stays one thing you can read.
+    ncomments: int;
+    catn:   array[0..TK.COMMENTS - 1] of int;
+    cat:    array[0..TK.COMMENTS * TK.TSLEN - 1] of char;
+    cwhon:  array[0..TK.COMMENTS - 1] of int;
+    cwho:   array[0..TK.COMMENTS * TK.WHOLEN - 1] of char;
+    ctxtn:  array[0..TK.COMMENTS - 1] of int;
+    ctxt:   array[0..TK.COMMENTS * TK.CTEXTLEN - 1] of char;
+    caudn:  array[0..TK.COMMENTS - 1] of int;
+    caud:   array[0..TK.COMMENTS * TK.AUDLEN - 1] of char;
+    nlogs: int;
+    logatn: array[0..TK.LOGS - 1] of int;
+    logat:  array[0..TK.LOGS * TK.TSLEN - 1] of char;
+    logn:  array[0..TK.LOGS - 1] of int;
+    log:   array[0..TK.LOGS * TK.LOGLEN - 1] of char;
+    logaudn: array[0..TK.LOGS - 1] of int;
+    logaud:  array[0..TK.LOGS * TK.AUDLEN - 1] of char;
+    seq: int;                                   // the number in the id, for sorting
+  end;
+
+var
+  tk.dir:  array[0..TK.PATHLEN - 1] of char;    // the data directory
+  tk.dirn: int;
+  tk.path: array[0..TK.PATHLEN - 1] of char;    // scratch: a full path, NUL terminated
+  tk.pathn: int;
+  tk.buf:  array[0..TK.FILEBUF - 1] of char;    // scratch: one file
+  tk.bufn: int;
+
+  tk.r: TicketRec;                              // the working copy
+  tk.all: array[0..TK.MAXOPEN - 1] of TicketRec;  // every ticket, loaded at startup
+  tk.n: int;
+  tk.nextseq: int;
+  tk.old: TicketRec;                            // an update's previous state, for the rename
+  tk.dropped: bool;                             // a discarded result we do not act on
+
+// ---- small helpers ---------------------------------------------------------
+
+// Copy at most `cap` bytes; returns how many. Every text field goes through here, so
+// truncation happens in exactly one place.
+function tk.set(dst: array of char; cap: int; src: array of char; n: int): int;
+var i: int;
+begin
+  if n > cap then n := cap;
+  for i := 0 to n - 1 do dst[i] := src[i];
+  return n;
+end;
+
+function tk.same(a: array of char; an: int; b: array of char; bn: int): bool;
+var i: int;
+begin
+  if an <> bn then return false;
+  for i := 0 to an - 1 do if a[i] <> b[i] then return false;
+  return true;
+end;
+
+// ASCII lowercase, said plainly: a case-insensitive search that claims to handle every
+// alphabet and does not is worse than one that says what it does.
+function tk.lower(c: char): char;
+begin
+  if (c >= 'A') and (c <= 'Z') then return chr(ord(c) + 32);
+  return c;
+end;
+
+function tk.contains(hay: array of char; hn: int; needle: array of char; nn: int): bool;
+var i, j: int;
+    ok: bool;
+begin
+  if nn = 0 then return true;
+  if nn > hn then return false;
+  for i := 0 to hn - nn do
+  begin
+    ok := true;
+    for j := 0 to nn - 1 do
+      if tk.lower(hay[i + j]) <> tk.lower(needle[j]) then begin ok := false; break; end;
+    if ok then return true;
+  end;
+  return false;
+end;
+
+procedure tk.blank;
+var i: int;
+begin
+  tk.r.idn := 0; tk.r.titlen := 0; tk.r.bodyn := 0; tk.r.statusn := 0;
+  tk.r.prion := 0; tk.r.arean := 0; tk.r.kindn := 0; tk.r.whon := 0; tk.r.msn := 0; tk.r.flown := 0;
+  tk.r.nlabels := 0; tk.r.nblocks := 0; tk.r.ncomments := 0; tk.r.nlogs := 0;
+  tk.r.createdn := 0; tk.r.updatedn := 0; tk.r.seq := 0;
+  for i := 0 to TK.LABELS - 1 do tk.r.labeln[i] := 0;
+  for i := 0 to TK.BLOCKS - 1 do tk.r.blockn[i] := 0;
+end;
+
+function tk.now(dst: array of char): int;
+begin
+  return time.iso(dst, 0, time.nowsec);
+end;
+
+// ---- ids and filenames -----------------------------------------------------
+
+// T-0001 upward. Sequential because people say these out loud and type them into a chat;
+// the server hands them out, so there is nothing to collide with.
+function tk.mkid(dst: array of char; seq: int): int;
+var d: array[0..15] of char;
+    n, v, i, w: int;
+begin
+  v := seq; n := 0;
+  if v = 0 then begin d[0] := '0'; n := 1; end;
+  while v > 0 do
+  begin
+    d[n] := chr(48 + (v - (v div 10) * 10));
+    v := v div 10;
+    n := n + 1;
+  end;
+  w := n;
+  if w < 4 then w := 4;                  // four digits until it needs five
+  dst[0] := 'T'; dst[1] := '-';
+  for i := 0 to w - n - 1 do dst[2 + i] := '0';
+  for i := 0 to n - 1 do dst[2 + (w - n) + i] := d[n - 1 - i];
+  return 2 + w;
+end;
+
+// The number out of "T-0007", or -1 when it does not look like an id.
+function tk.seqof(s: array of char; n: int): int;
+var i, v: int;
+begin
+  if n < 3 then return -1;
+  if (s[0] <> 'T') or (s[1] <> '-') then return -1;
+  v := 0;
+  for i := 2 to n - 1 do
+  begin
+    if (s[i] < '0') or (s[i] > '9') then return -1;
+    v := v * 10 + (ord(s[i]) - 48);
+  end;
+  return v;
+end;
+
+// A title turned into filename characters: lowercase, one hyphen between words, nothing
+// exotic. Only readability -- the id is what identifies the ticket.
+function tk.slug(dst: array of char; cap: int; src: array of char; n: int): int;
+var i, w: int;
+    c: char;
+    dash: bool;
+begin
+  w := 0; dash := false;
+  for i := 0 to n - 1 do
+  begin
+    if w >= cap then break;
+    c := tk.lower(src[i]);
+    if ((c >= 'a') and (c <= 'z')) or ((c >= '0') and (c <= '9')) then
+    begin
+      dst[w] := c; w := w + 1; dash := false;
+    end
+    else if not dash and (w > 0) then
+    begin
+      dst[w] := '-'; w := w + 1; dash := true;
+    end;
+  end;
+  while (w > 0) and (dst[w - 1] = '-') do w := w - 1;   // no trailing hyphen
+  return w;
+end;
+
+// <dir>/<id>-<slug>.md, NUL terminated in tk.path.
+procedure tk.mkpath(rec: array of TicketRec);
+var n: int;
+begin
+  n := tk.set(tk.path, TK.PATHLEN, tk.dir, tk.dirn);
+  tk.path[n] := '/'; n := n + 1;
+  n := n + tk.set(tk.path[n..TK.PATHLEN - 1], TK.IDLEN, rec[0].id, rec[0].idn);
+  tk.path[n] := '-'; n := n + 1;
+  n := n + tk.slug(tk.path[n..TK.PATHLEN - 1], 60, rec[0].title, rec[0].titlen);
+  n := io.push(tk.path, n, ".md");
+  tk.path[n] := chr(0);
+  tk.pathn := n;
+end;
+
+// ---- writing a ticket ------------------------------------------------------
+//
+// The file is built in one buffer and written in one call. Frontmatter first, in a fixed
+// order so a diff shows what changed rather than fields moving about, then the body.
+
+procedure tk.putfield(name: str; v: array of char; n: int);
+begin
+  tk.bufn := io.push(tk.buf, tk.bufn, name);
+  tk.bufn := io.push(tk.buf, tk.bufn, ": ");
+  tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], n, v, n);
+  tk.bufn := io.push(tk.buf, tk.bufn, "\n");
+end;
+
+// A list as [a, b, c] -- or [] , which is what an empty list must look like, because
+// "absent" and "empty" have to stay distinguishable when this is read back.
+procedure tk.putlist(name: str; count: int; lens: array of int; vals: array of char; width: int);
+var i: int;
+begin
+  tk.bufn := io.push(tk.buf, tk.bufn, name);
+  tk.bufn := io.push(tk.buf, tk.bufn, ": [");
+  for i := 0 to count - 1 do
+  begin
+    if i > 0 then tk.bufn := io.push(tk.buf, tk.bufn, ", ");
+    tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], lens[i],
+                                vals[i * width..(i + 1) * width - 1], lens[i]);
+  end;
+  tk.bufn := io.push(tk.buf, tk.bufn, "]\n");
+end;
+
+function tk.write(rec: array of TicketRec): bool;
+var fd, n, i: int;
+begin
+  tk.bufn := 0;
+  tk.bufn := io.push(tk.buf, tk.bufn, "---\n");
+  tk.putfield("id",       rec[0].id,      rec[0].idn);
+  tk.putfield("title",    rec[0].title,   rec[0].titlen);
+  tk.putfield("status",   rec[0].status,  rec[0].statusn);
+  tk.putfield("priority", rec[0].prio,    rec[0].prion);
+  tk.putfield("area",     rec[0].area,    rec[0].arean);
+  if rec[0].kindn > 0 then tk.putfield("kind", rec[0].kind, rec[0].kindn);
+  if rec[0].whon > 0 then tk.putfield("assignee", rec[0].who, rec[0].whon);
+  if rec[0].msn > 0 then tk.putfield("milestone", rec[0].ms, rec[0].msn);
+  if rec[0].flown > 0 then tk.putfield("flow", rec[0].flow, rec[0].flown);
+  tk.putlist("labels",     rec[0].nlabels, rec[0].labeln, rec[0].label, TK.LABELLEN);
+  tk.putlist("blocked_by", rec[0].nblocks, rec[0].blockn, rec[0].block, TK.IDLEN);
+  tk.putfield("created",  rec[0].created, rec[0].createdn);
+  tk.putfield("updated",  rec[0].updated, rec[0].updatedn);
+  tk.bufn := io.push(tk.buf, tk.bufn, "---\n\n");
+  tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], rec[0].bodyn,
+                              rec[0].body, rec[0].bodyn);
+  if (tk.bufn = 0) or (tk.buf[tk.bufn - 1] <> chr(10)) then
+    tk.bufn := io.push(tk.buf, tk.bufn, "\n");
+
+  // The work log: one dated line each, under its own heading. Plain markdown, so the
+  // file still reads as a document rather than as a dump of a data structure. The
+  // audience rides along as a bracketed tag right after the dash -- present only when it
+  // is "agent", so a line nobody marked keeps reading exactly as it always has, and an
+  // old file with no tag at all still parses (tk.readbody treats a missing tag as human).
+  if rec[0].nlogs > 0 then
+  begin
+    tk.bufn := io.push(tk.buf, tk.bufn, "\n## Work log\n");
+    for i := 0 to rec[0].nlogs - 1 do
+    begin
+      tk.bufn := io.push(tk.buf, tk.bufn, "- ");
+      if tk.same(rec[0].logaud[i * TK.AUDLEN..i * TK.AUDLEN + rec[0].logaudn[i] - 1],
+                 rec[0].logaudn[i], "agent", 5) then
+        tk.bufn := io.push(tk.buf, tk.bufn, "[agent] ");
+      tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], 10,
+                                  rec[0].logat[i * TK.TSLEN..(i + 1) * TK.TSLEN - 1], 10);
+      tk.bufn := io.push(tk.buf, tk.bufn, " - ");
+      tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], rec[0].logn[i],
+                                  rec[0].log[i * TK.LOGLEN..(i + 1) * TK.LOGLEN - 1],
+                                  rec[0].logn[i]);
+      tk.bufn := io.push(tk.buf, tk.bufn, "\n");
+    end;
+  end;
+
+  // The conversation, oldest first: a "### <when> <who>" line and then what was said.
+  // The audience is appended to that same line as "[agent]", only when it is agent, so
+  // a file with a human comment (the overwhelming majority) is byte-for-byte what it
+  // always was -- and a hand-edited file with no tag at all still parses (see tk.readbody).
+  if rec[0].ncomments > 0 then
+  begin
+    tk.bufn := io.push(tk.buf, tk.bufn, "\n## Comments\n");
+    for i := 0 to rec[0].ncomments - 1 do
+    begin
+      tk.bufn := io.push(tk.buf, tk.bufn, "\n### ");
+      tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], rec[0].catn[i],
+                                  rec[0].cat[i * TK.TSLEN..(i + 1) * TK.TSLEN - 1],
+                                  rec[0].catn[i]);
+      tk.bufn := io.push(tk.buf, tk.bufn, " ");
+      tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], rec[0].cwhon[i],
+                                  rec[0].cwho[i * TK.WHOLEN..(i + 1) * TK.WHOLEN - 1],
+                                  rec[0].cwhon[i]);
+      if tk.same(rec[0].caud[i * TK.AUDLEN..i * TK.AUDLEN + rec[0].caudn[i] - 1],
+                 rec[0].caudn[i], "agent", 5) then
+        tk.bufn := io.push(tk.buf, tk.bufn, " [agent]");
+      tk.bufn := io.push(tk.buf, tk.bufn, "\n");
+      tk.bufn := tk.bufn + tk.set(tk.buf[tk.bufn..TK.FILEBUF - 1], rec[0].ctxtn[i],
+                                  rec[0].ctxt[i * TK.CTEXTLEN..(i + 1) * TK.CTEXTLEN - 1],
+                                  rec[0].ctxtn[i]);
+      tk.bufn := io.push(tk.buf, tk.bufn, "\n");
+    end;
+  end;
+
+  tk.mkpath(rec);
+  fd := sys3(SYS.open, addr(tk.path[0]), bor(bor(O_WRONLY, O_CREAT), O_TRUNC), 420);
+  if fd < 0 then return false;
+  n := io.write(fd, addr(tk.buf[0]), tk.bufn);
+  sys1(SYS.close, fd);
+  return n = tk.bufn;
+end;
+
+function tk.remove(rec: array of TicketRec): bool;
+begin
+  tk.mkpath(rec);
+  return sys1(SYS.unlink, addr(tk.path[0])) = 0;
+end;
+
+// ---- reading a ticket ------------------------------------------------------
+//
+// A small parser, and deliberately a forgiving one: an unknown key is skipped rather than
+// refused, so a field added by hand does not make the file unreadable. What it will not
+// do is guess -- a missing `id` means this is not a ticket.
+
+var
+  tk.kat, tk.kend: int;      // the key of the current line
+  tk.vat, tk.vend: int;      // its value, trimmed
+
+// Read the line at `at`; sets tk.k*/tk.v*. Returns the start of the next line, or -1 at
+// the end of the frontmatter.
+function tk.line(at: int; upto: int): int;
+var e, c: int;
+begin
+  if at >= upto then return -1;
+  e := at;
+  while (e < upto) and (tk.buf[e] <> chr(10)) do e := e + 1;
+
+  // "---" on its own closes the frontmatter
+  if (e - at = 3) and (tk.buf[at] = '-') and (tk.buf[at + 1] = '-') and (tk.buf[at + 2] = '-') then
+    return -1;
+
+  c := at;
+  while (c < e) and (tk.buf[c] <> ':') do c := c + 1;
+  if c >= e then                              // no colon: not a field, skip the line
+  begin
+    tk.kat := at; tk.kend := at;
+    tk.vat := at; tk.vend := at;
+    return e + 1;
+  end;
+  tk.kat := at; tk.kend := c;
+  tk.vat := c + 1;
+  while (tk.vat < e) and (tk.buf[tk.vat] = ' ') do tk.vat := tk.vat + 1;
+  tk.vend := e;
+  while (tk.vend > tk.vat) and (tk.buf[tk.vend - 1] = ' ') do tk.vend := tk.vend - 1;
+  return e + 1;
+end;
+
+function tk.keyis(s: str): bool;
+var i: int;
+begin
+  if tk.kend - tk.kat <> slen(s) then return false;
+  for i := 0 to slen(s) - 1 do
+    if tk.buf[tk.kat + i] <> schar(s, i) then return false;
+  return true;
+end;
+
+// [a, b, c] into a counted list. Brackets optional, spaces ignored, empty means empty.
+function tk.readlist(lens: array of int; vals: array of char; width: int; max: int): int;
+var i, at, e, n, w: int;
+begin
+  at := tk.vat; e := tk.vend;
+  if (at < e) and (tk.buf[at] = '[') then at := at + 1;
+  if (e > at) and (tk.buf[e - 1] = ']') then e := e - 1;
+  n := 0;
+  while (at < e) and (n < max) do
+  begin
+    while (at < e) and ((tk.buf[at] = ' ') or (tk.buf[at] = ',')) do at := at + 1;
+    if at >= e then break;
+    i := at;
+    while (i < e) and (tk.buf[i] <> ',') do i := i + 1;
+    w := i;
+    while (w > at) and (tk.buf[w - 1] = ' ') do w := w - 1;
+    if w > at then
+    begin
+      lens[n] := tk.set(vals[n * width..(n + 1) * width - 1], width, tk.buf[at..w - 1], w - at);
+      n := n + 1;
+    end;
+    at := i + 1;
+  end;
+  return n;
+end;
+
+// Does the line at `at` start with this heading?
+function tk.heading(at: int; upto: int; s: str): bool;
+var i: int;
+begin
+  if at + slen(s) > upto then return false;
+  for i := 0 to slen(s) - 1 do
+    if tk.buf[at + i] <> schar(s, i) then return false;
+  return true;
+end;
+
+// The end of the line at `at`.
+function tk.eol(at: int; upto: int): int;
+begin
+  while (at < upto) and (tk.buf[at] <> chr(10)) do at := at + 1;
+  return at;
+end;
+
+// Split what follows the frontmatter into the body, the work log and the comments.
+// A heading we do not know stays part of the body: a ticket someone extended by hand
+// keeps what they added rather than losing it on the next write.
+procedure tk.readbody(start: int);
+var e, bodyend, i, w, at: int;
+    section: int;                   // 0 body, 1 work log, 2 comments
+begin
+  section := 0;
+  bodyend := tk.bufn;
+  i := start;
+  while i < tk.bufn do
+  begin
+    e := tk.eol(i, tk.bufn);
+    if tk.heading(i, e, "## Work log") then
+    begin
+      if section = 0 then bodyend := i;
+      section := 1;
+    end
+    else if tk.heading(i, e, "## Comments") then
+    begin
+      if section = 0 then bodyend := i;
+      section := 2;
+    end
+    else if (section = 1) and tk.heading(i, e, "- ") then
+    begin
+      if tk.r.nlogs < TK.LOGS then
+      begin
+        w := tk.r.nlogs;
+        at := i + 2;
+        // "[agent] " right after the dash, only when it is not human -- absent on every
+        // file written before this field existed, which is exactly why absent means
+        // human rather than an error.
+        if tk.heading(at, e, "[agent] ") then
+        begin
+          tk.r.logaudn[w] := tk.set(tk.r.logaud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                                    TK.AUDLEN, "agent", 5);
+          at := at + 8;
+        end
+        else
+          tk.r.logaudn[w] := tk.set(tk.r.logaud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                                    TK.AUDLEN, "human", 5);
+        // "<when> - <text>" -- " - " is the separator tk.write puts in, and the date
+        // itself never contains one, so the first occurrence splits it correctly.
+        i := at;
+        while (i + 2 < e) and not ((tk.buf[i] = ' ') and (tk.buf[i + 1] = '-') and (tk.buf[i + 2] = ' ')) do
+          i := i + 1;
+        tk.r.logatn[w] := tk.set(tk.r.logat[w * TK.TSLEN..(w + 1) * TK.TSLEN - 1],
+                                 TK.TSLEN, tk.buf[at..i - 1], i - at);
+        if i + 2 < e then i := i + 3 else i := e;
+        tk.r.logn[w] := tk.set(tk.r.log[w * TK.LOGLEN..(w + 1) * TK.LOGLEN - 1],
+                               TK.LOGLEN, tk.buf[i..e - 1], e - i);
+        tk.r.nlogs := w + 1;
+      end;
+    end
+    else if (section = 2) and tk.heading(i, e, "### ") then
+    begin
+      if tk.r.ncomments < TK.COMMENTS then
+      begin
+        w := tk.r.ncomments;
+        // "### <when> <who>" -- the timestamp has no spaces, so the first one splits it
+        at := i + 4;
+        e := tk.eol(at, tk.bufn);
+        i := at;
+        while (i < e) and (tk.buf[i] <> ' ') do i := i + 1;
+        tk.r.catn[w] := tk.set(tk.r.cat[w * TK.TSLEN..(w + 1) * TK.TSLEN - 1],
+                               TK.TSLEN, tk.buf[at..i - 1], i - at);
+        if i < e then i := i + 1;
+        // The author runs to the end of the line, except for a trailing " [agent]" --
+        // absent on every comment written before this field existed, so absent parses
+        // as human, the same compatibility rule the work log uses.
+        if (e - i >= 8) and tk.same(tk.buf[e - 8..e - 1], 8, " [agent]", 8) then
+        begin
+          tk.r.caudn[w] := tk.set(tk.r.caud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                                  TK.AUDLEN, "agent", 5);
+          e := e - 8;
+        end
+        else
+          tk.r.caudn[w] := tk.set(tk.r.caud[w * TK.AUDLEN..(w + 1) * TK.AUDLEN - 1],
+                                  TK.AUDLEN, "human", 5);
+        tk.r.cwhon[w] := tk.set(tk.r.cwho[w * TK.WHOLEN..(w + 1) * TK.WHOLEN - 1],
+                                TK.WHOLEN, tk.buf[i..e - 1], e - i);
+        e := tk.eol(at, tk.bufn);          // restore e to the end of the header line
+        // the text runs to the next "### " or "## ", or to the end
+        at := e + 1;
+        i := at;
+        while i < tk.bufn do
+        begin
+          e := tk.eol(i, tk.bufn);
+          if tk.heading(i, e, "### ") or tk.heading(i, e, "## ") then break;
+          i := e + 1;
+        end;
+        w := tk.r.ncomments;
+        e := i;
+        while (e > at) and (tk.buf[e - 1] = chr(10)) do e := e - 1;   // trim blank lines
+        tk.r.ctxtn[w] := tk.set(tk.r.ctxt[w * TK.CTEXTLEN..(w + 1) * TK.CTEXTLEN - 1],
+                                TK.CTEXTLEN, tk.buf[at..e - 1], e - at);
+        tk.r.ncomments := w + 1;
+        continue;
+      end;
+    end;
+    i := e + 1;
+  end;
+
+  while (bodyend > start) and (tk.buf[bodyend - 1] = chr(10)) do bodyend := bodyend - 1;
+  if bodyend > start then
+    tk.r.bodyn := tk.set(tk.r.body, TK.BODYLEN, tk.buf[start..bodyend - 1], bodyend - start);
+end;
+
+// Parse tk.buf[0..tk.bufn) into tk.r. False when it is not a ticket.
+function tk.parse: bool;
+var at, next: int;
+begin
+  tk.blank;
+  at := 0;
+  if (tk.bufn >= 4) and (tk.buf[0] = '-') and (tk.buf[1] = '-') and (tk.buf[2] = '-') then
+    at := 4;
+
+  while true do
+  begin
+    next := tk.line(at, tk.bufn);
+    if next < 0 then break;
+    if tk.keyis("id")       then tk.r.idn     := tk.set(tk.r.id,     TK.IDLEN,    tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("title")    then tk.r.titlen  := tk.set(tk.r.title,  TK.TITLELEN, tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("status")   then tk.r.statusn := tk.set(tk.r.status, TK.SHORTLEN, tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("priority") then tk.r.prion   := tk.set(tk.r.prio,   TK.SHORTLEN, tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("area")     then tk.r.arean   := tk.set(tk.r.area,   TK.SHORTLEN, tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("kind")     then tk.r.kindn   := tk.set(tk.r.kind,   TK.SHORTLEN, tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("assignee") then tk.r.whon    := tk.set(tk.r.who,    TK.WHOLEN,   tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("milestone") then tk.r.msn    := tk.set(tk.r.ms,     TK.MSLEN,    tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("flow")      then tk.r.flown  := tk.set(tk.r.flow,   TK.FLOWLEN,  tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("created")  then tk.r.createdn := tk.set(tk.r.created, TK.TSLEN,  tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("updated")  then tk.r.updatedn := tk.set(tk.r.updated, TK.TSLEN,  tk.buf[tk.vat..tk.vend - 1], tk.vend - tk.vat)
+    else if tk.keyis("labels")     then tk.r.nlabels := tk.readlist(tk.r.labeln, tk.r.label, TK.LABELLEN, TK.LABELS)
+    else if tk.keyis("blocked_by") then tk.r.nblocks := tk.readlist(tk.r.blockn, tk.r.block, TK.IDLEN, TK.BLOCKS);
+    at := next;
+  end;
+
+  // Past the closing --- and the blank line after it, the rest of the file is the body
+  // -- except for the two sections that have their own meaning. Split them off here, so
+  // a ticket read back is the ticket that was written.
+  while (at < tk.bufn) and (tk.buf[at] <> chr(10)) do at := at + 1;
+  if at < tk.bufn then at := at + 1;
+  while (at < tk.bufn) and (tk.buf[at] = chr(10)) do at := at + 1;
+  if at < tk.bufn then tk.readbody(at);
+
+  if tk.r.idn = 0 then return false;
+  tk.r.seq := tk.seqof(tk.r.id, tk.r.idn);
+  if tk.r.seq < 0 then return false;
+  return true;
+end;
+
+function tk.read(name: array of char; n: int): bool;
+var fd, got: int;
+begin
+  tk.pathn := tk.set(tk.path, TK.PATHLEN, tk.dir, tk.dirn);
+  tk.path[tk.pathn] := '/'; tk.pathn := tk.pathn + 1;
+  tk.pathn := tk.pathn + tk.set(tk.path[tk.pathn..TK.PATHLEN - 1], n, name, n);
+  tk.path[tk.pathn] := chr(0);
+
+  fd := fs.open(addr(tk.path[0]));
+  if fd < 0 then return false;
+  got := io.read(fd, addr(tk.buf[0]), TK.FILEBUF);
+  fs.close(fd);
+  if got <= 0 then return false;
+  tk.bufn := got;
+  return tk.parse;
+end;
+
+// ---- the whole directory ---------------------------------------------------
+
+// Read every ticket into memory once, at startup. Writes go to the file AND to the copy
+// in memory, so a read never has to touch the disk again -- and the file stays the truth,
+// which is what makes editing one by hand legitimate.
+procedure tk.loadall;
+var fd, i: int;
+    ok: bool;
+begin
+  tk.n := 0;
+  tk.nextseq := 1;
+  tk.path[0] := chr(0);
+  i := tk.set(tk.path, TK.PATHLEN, tk.dir, tk.dirn);
+  tk.path[i] := chr(0);
+
+  fd := fs.opendir(addr(tk.path[0]));
+  if fd < 0 then return;                       // no directory yet: no tickets yet
+  while fs.next(fd) do
+  begin
+    if fs.namelen < 4 then continue;
+    if not ((fs.name[fs.namelen - 3] = '.') and (fs.name[fs.namelen - 2] = 'm')
+        and (fs.name[fs.namelen - 1] = 'd')) then continue;
+    if tk.n >= TK.MAXOPEN then break;
+    ok := tk.read(fs.name, fs.namelen);
+    if ok then
+    begin
+      tk.all[tk.n] := tk.r;
+      if tk.r.seq >= tk.nextseq then tk.nextseq := tk.r.seq + 1;
+      tk.n := tk.n + 1;
+    end;
+  end;
+  fs.close(fd);
+end;
+
+// The index of the ticket with this id, or -1.
+function tk.find(id: array of char; n: int): int;
+var i: int;
+begin
+  for i := 0 to tk.n - 1 do
+    if tk.same(tk.all[i].id[0..tk.all[i].idn - 1], tk.all[i].idn, id, n) then return i;
+  return -1;
+end;

@@ -1,0 +1,35 @@
+/* The API reference. Same tokens as the board -- it is the same product, one door over. */
+main{max-width:52rem;margin:0 auto;padding:1.4rem 1.1rem 4rem}
+.lnk{color:var(--accent);text-decoration:none;font-size:.9rem;font-weight:600}
+.lnk:hover{text-decoration:underline}
+.tool{border-top:1px solid var(--rule);padding:1.8rem 0 .4rem}
+.tool:first-child{border-top:0}
+.tool h2{font:600 1.05rem/1.3 ui-monospace,Menlo,monospace;margin:0 0 .4rem;
+         letter-spacing:-.01em;word-break:break-word}
+.verb{display:inline-block;background:var(--accent);color:var(--bg);border-radius:6px;
+      padding:.05rem .4rem;font-size:.72rem;letter-spacing:.06em;margin-right:.45rem;
+      vertical-align:.12em}
+.tool h3{font:550 .78rem/1 inherit;letter-spacing:.055em;text-transform:uppercase;
+         color:var(--muted);margin:1.3rem 0 .5rem}
+.lead{margin:0 0 .3rem;color:var(--fg)}
+.tool table{width:100%;border-collapse:collapse;font-size:.9rem}
+.tool th{text-align:left;font:550 .74rem/1 inherit;letter-spacing:.05em;
+         text-transform:uppercase;color:var(--muted);padding:.35rem .5rem .35rem 0;
+         border-bottom:1px solid var(--rule)}
+.tool td{padding:.45rem .5rem .45rem 0;border-bottom:1px solid var(--rule);
+         vertical-align:top}
+td.k{font:600 .86rem ui-monospace,Menlo,monospace;white-space:nowrap}
+td.ty{font:.82rem ui-monospace,Menlo,monospace;color:var(--accent);white-space:nowrap}
+td.ds{color:var(--muted)}
+.lim{color:var(--muted);font-weight:400}
+.req{display:inline-block;background:var(--soft);color:var(--accent);border-radius:999px;
+     padding:0 .4rem;font:600 .66rem/1.5 ui-sans-serif,system-ui,sans-serif;
+     margin-left:.4rem;vertical-align:.08em;text-transform:uppercase;letter-spacing:.05em}
+.tool pre{background:var(--soft);border:1px solid var(--rule);border-radius:10px;
+          padding:.8rem .9rem;overflow-x:auto;margin:0;
+          font:.8rem/1.6 ui-monospace,Menlo,monospace}
+.also{color:var(--muted);font-size:.86rem;margin:1rem 0 0}
+@media(max-width:620px){
+  main{padding:1rem .8rem 3rem}
+  td.k,td.ty{white-space:normal}
+}
