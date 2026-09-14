@@ -1,5 +1,7 @@
 # Wantzel demos
 
+**[📖 Browse the demos, with screenshots and walkthroughs →](https://wantzel.github.io/demos/)**
+
 Real applications written in [Wantzel](https://github.com/wantzel/wantzel), each in its own
 folder. They are here to answer the question a language project cannot answer about itself:
 **what would you actually build with this?**
@@ -13,7 +15,7 @@ how to build it and what to expect when you run it.
 
 | demo | what it is |
 |---|---|
-| 📋 **[wantzel-tasks](wantzel-tasks/)** | A ticket system for people *and* agents: a kanban board, a list, a REST API and an MCP server — one 600 kB binary, one port, no dependencies. Built autonomously by an AI agent one day after the compiler's first release. |
+| 📋 **[wantzel-tasks](wantzel-tasks/)** | A ticket system for people *and* agents: a kanban board, a list, a REST API and an MCP server — one 600 kB binary, one port, no dependencies. Built autonomously by an AI agent one day after the compiler's first release. **[→ walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** |
 
 <!-- Add a row when a demo lands. -->
 

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wantzel demos</title>
+<meta name="description" content="Real applications written in Wantzel — a strictly typed, dependency-free compiled language built for a world where a lot of code is written by machines.">
+<style>
+  :root{--bg:#fbfaf8;--fg:#1a1815;--muted:#5e5850;--rule:#e3ded5;
+        --code-bg:#f2efe9;--accent:#8a4218;--accent-soft:#f0e4da;--card:#fff}
+  @media(prefers-color-scheme:dark){:root{--bg:#15140f;--fg:#ecebe6;--muted:#a09a8f;
+        --rule:#2e2b25;--code-bg:#1e1c18;--accent:#e0a473;--accent-soft:#2a211a;--card:#1e1c18}}
+  *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+  .wrap{max-width:44rem;margin:0 auto;padding:0 1.3rem 4rem}
+  a{color:var(--accent)}
+  header{border-bottom:1px solid var(--rule);padding:3.4rem 0 2.4rem;margin-bottom:2.4rem}
+  .eyebrow{font:600 .78rem/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--accent);margin:0 0 .9rem}
+  h1{font-size:2.2rem;line-height:1.2;margin:0 0 .7rem;letter-spacing:-.015em}
+  .lede{font-size:1.15rem;color:var(--muted);margin:0}
+  h2{font-size:1.35rem;margin:2.8rem 0 .8rem;letter-spacing:-.012em}
+  p{margin:0 0 1.1rem}
+  code{font:.87em ui-monospace,Menlo,monospace;background:var(--code-bg);
+       padding:.1em .35em;border-radius:5px}
+  pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:12px;
+      padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.3rem}
+  pre code{background:none;padding:0;font-size:.82rem;line-height:1.6}
+  /* One card per demo. The list is short on purpose; it grows one row at a time. */
+  .demo{border:1px solid var(--rule);border-radius:14px;background:var(--card);
+        padding:1.3rem 1.4rem;margin:0 0 1.2rem}
+  .demo h3{margin:0 0 .5rem;font-size:1.2rem;letter-spacing:-.01em}
+  .demo h3 a{text-decoration:none}
+  .demo p{margin:0 0 .9rem;color:var(--muted)}
+  .demo .links{font:.92rem ui-sans-serif,system-ui,sans-serif}
+  .demo .links a{font-weight:600;text-decoration:none}
+  .demo .links a:hover{text-decoration:underline}
+  .demo .links .sep{color:var(--muted);padding:0 .45rem}
+  .shot{display:block;width:100%;border:1px solid var(--rule);border-radius:10px;
+        margin:0 0 1.1rem}
+  footer{border-top:1px solid var(--rule);margin-top:3.4rem;padding-top:1.6rem;
+         color:var(--muted);font-size:.9rem}
+  @media(max-width:620px){body{font-size:16px}h1{font-size:1.7rem}.wrap{padding:0 1rem 3rem}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Wantzel</p>
+    <h1>Demos</h1>
+    <p class="lede">Real applications written in <a href="https://wantzel.com">Wantzel</a>,
+    each one small enough to read in full. They answer the question a language project
+    cannot answer about itself: what would you actually build with this?</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+<div class="demo">
+  <h3><a href="wantzel-tasks/docs/">wantzel-tasks</a></h3>
+  <a href="wantzel-tasks/docs/"><img class="shot"
+     src="wantzel-tasks/docs/img/01-board-desktop-light.png"
+     alt="The wantzel-tasks kanban board, showing the project's own backlog"></a>
+  <p>A ticket system for people <em>and</em> agents: a kanban board, a list, a REST API and
+  an MCP server — one 600&nbsp;kB binary, one port, no dependencies. Built autonomously by
+  an AI agent one day after the compiler's first release.</p>
+  <p class="links">
+    <a href="wantzel-tasks/docs/">Read the walkthrough</a><span class="sep">·</span>
+    <a href="https://github.com/wantzel/demos/tree/main/wantzel-tasks">Source</a>
+  </p>
+</div>
+
+<h2>Running one</h2>
+
+<p>You need the Wantzel compiler — one binary, nothing else. Each demo carries a script
+that builds and runs it:</p>
+
+<pre><code>git clone https://github.com/wantzel/demos
+cd demos/wantzel-tasks
+./wztrun          # builds in ~30 ms, then serves on http://127.0.0.1:7777</code></pre>
+
+<p>There is no package manager, no runtime and nothing to install beyond the compiler: the
+result is a static executable, and the same compiler cross-compiles to Windows.</p>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    <p><a href="https://wantzel.com">wantzel.com</a> ·
+    <a href="https://github.com/wantzel/wantzel">the compiler's source</a> ·
+    <a href="https://github.com/wantzel/demos">this repository</a> ·
+    <a href="mailto:floris@wantzel.com">floris@wantzel.com</a></p>
+    <p>MIT, the same as the compiler.</p>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

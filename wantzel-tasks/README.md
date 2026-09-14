@@ -10,7 +10,9 @@ The thing it built is a real ticket system, not a toy: a **kanban board**, a **l
 **REST API** and an **MCP server** — one 600 kB binary, one port, no dependencies. We use
 it on its own backlog, which is what you are looking at here.
 
-![The kanban board, showing this project's own backlog](docs/img/01-board-desktop-light.png)
+### 👉 **[Read the full walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real MCP session, what goes over the wire, and how the pieces fit together.
+
+[![The kanban board, showing this project's own backlog](docs/img/01-board-desktop-light.png)](https://wantzel.github.io/demos/wantzel-tasks/docs/)
 
 ## 🌱 How early this is
 
@@ -67,8 +69,9 @@ That is the whole installation. There is no package manager, no runtime to insta
 container and no database: the binary is about 600 kB and your tickets are markdown files
 in a directory.
 
-**[The full walkthrough is in `docs/`](docs/index.html)** — a real MCP session, what goes
-over the wire, and how the pieces fit together.
+**[📖 The full walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real MCP session, what goes over
+the wire, the screenshots, and how the pieces fit together. (The same pages are in
+[`docs/`](docs/) if you cloned the repo.)
 
 ## 📊 The numbers
 
@@ -290,7 +293,7 @@ are reading the history of the thing you are looking at, in the order it happene
 | the language and the compiler | **[wantzel.com](https://wantzel.com)** |
 | the compiler's source | [github.com/wantzel/wantzel](https://github.com/wantzel/wantzel) |
 | this demo, and the others | [github.com/wantzel/demos](https://github.com/wantzel/demos) |
-| the full walkthrough | [`docs/index.html`](docs/index.html) |
+| the full walkthrough | **[the showcase page](https://wantzel.github.io/demos/wantzel-tasks/docs/)** |
 | questions, or something you built with it | **[floris@wantzel.com](mailto:floris@wantzel.com)** |
 
 Wantzel is a strictly typed, procedural, compiled language with **zero dependencies**,
