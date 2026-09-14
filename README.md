@@ -14,11 +14,9 @@ one day after the compiler's first release, and the backlog you see in it is its
 
 [![The wantzel-tasks board](wantzel-tasks/docs/img/01-board-desktop-light.png)](https://wantzel.github.io/demos/wantzel-tasks/docs/)
 
-| | |
-|---|---|
-| 📖 **the walkthrough** | **[wantzel.github.io/demos/wantzel-tasks/docs](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real MCP session, what goes over the wire, and how it fits together |
-| 📄 the README | [wantzel-tasks/](wantzel-tasks/) |
-| 💻 the source | [wantzel-tasks/src/](wantzel-tasks/src/) — the whole interface is one file, [`schema.wz`](wantzel-tasks/src/schema.wz) |
+**[📖 Walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** &nbsp;·&nbsp;
+[📄 README](wantzel-tasks/) &nbsp;·&nbsp;
+[💻 Source](wantzel-tasks/src/)
 
 ```bash
 git clone https://github.com/wantzel/demos
