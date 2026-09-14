@@ -22,7 +22,7 @@
   /* Serif to read. This is a document, not an application: the demo's own UI uses the
      sans stack, and the difference is deliberate. */
   body{margin:0;background:var(--bg);color:var(--fg);
-       font:17px/1.7 ui-serif,Georgia,"Times New Roman",serif}
+       font:21px/1.62 ui-serif,Georgia,"Times New Roman",serif}
   .wrap{max-width:46rem;margin:0 auto;padding:0 1.3rem}
   a{color:var(--accent)}
   h1,h2,h3{line-height:1.25;letter-spacing:-.012em}
@@ -68,6 +68,9 @@
   .pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
   .pair figure{margin:0}
   @media(max-width:700px){.pair{grid-template-columns:1fr}}
+  /* 19px is for reading at screen distance; on a phone it makes the line too short. */
+  @media(max-width:620px){body{font-size:17px;line-height:1.62}
+    .wrap{padding:0 1rem}}
 
   table{border-collapse:collapse;width:100%;margin:0 0 1.4rem;
         font:.92rem ui-sans-serif,system-ui,sans-serif}
