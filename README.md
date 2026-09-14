@@ -4,9 +4,9 @@ Real applications written in [Wantzel](https://wantzel.com), each small enough t
 full. They answer the question a language project cannot answer about itself: **what would
 you actually build with this?**
 
-> 🌱 The language is pre-1.0 and still changing; so may these programs.
+> The language is pre-1.0 and still changing; so may these programs.
 
-## 📋 wantzel-tasks
+## wantzel-tasks
 
 A ticket system for people *and* agents — a kanban board, a list, a REST API and an MCP
 server in one 600 kB binary, with no dependencies. It was built autonomously by an AI agent
@@ -14,9 +14,9 @@ one day after the compiler's first release, and the backlog you see in it is its
 
 [![The wantzel-tasks board](wantzel-tasks/docs/img/01-board-desktop-light.png)](https://wantzel.github.io/demos/wantzel-tasks/docs/)
 
-**[📖 Walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** &nbsp;·&nbsp;
-[📄 README](wantzel-tasks/) &nbsp;·&nbsp;
-[💻 Source](wantzel-tasks/src/)
+[Read the walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/) ·
+[README](wantzel-tasks/) ·
+[Source](wantzel-tasks/src/)
 
 ```bash
 git clone https://github.com/wantzel/demos

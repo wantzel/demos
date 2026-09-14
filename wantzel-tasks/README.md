@@ -10,11 +10,12 @@ The thing it built is a real ticket system, not a toy: a **kanban board**, a **l
 **REST API** and an **MCP server** — one 600 kB binary, one port, no dependencies. We use
 it on its own backlog, which is what you are looking at here.
 
-### 👉 **[Read the full walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real MCP session, what goes over the wire, and how the pieces fit together.
+**[Read the full walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real
+MCP session, what goes over the wire, and how the pieces fit together.
 
 [![The kanban board, showing this project's own backlog](docs/img/01-board-desktop-light.png)](https://wantzel.github.io/demos/wantzel-tasks/docs/)
 
-## 🌱 How early this is
+## How early this is
 
 The compiler reached **v0.1.0 on 13 September 2026**. This application was built the
 **next day**, against v0.1.2 — a compiler one day past its first tagged release, and
@@ -39,7 +40,7 @@ something we expect to learn by building with it, not by designing it up front.
 If this is what one day past v0.1 looks like, the interesting question is what the same
 three hours buy at v0.5.
 
-## ⚡ Why a compiler makes this possible
+## Why a compiler makes this possible
 
 An agent works in a loop: write, compile, read the error, fix. Everything that matters
 about the language is about what that loop costs.
@@ -69,11 +70,11 @@ That is the whole installation. There is no package manager, no runtime to insta
 container and no database: the binary is about 600 kB and your tickets are markdown files
 in a directory.
 
-**[📖 The full walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real MCP session, what goes over
+**[The full walkthrough](https://wantzel.github.io/demos/wantzel-tasks/docs/)** — a real MCP session, what goes over
 the wire, the screenshots, and how the pieces fit together. (The same pages are in
 [`docs/`](docs/) if you cloned the repo.)
 
-## 📊 The numbers
+## The numbers
 
 Measured on this machine (WSL2, x86-64), not estimated. `wztrun` prints the compile time
 on every build, so the first row is one you will see for yourself:
@@ -93,7 +94,7 @@ The compile time is the one that changes how you work. At 30 ms the build is not
 you wait for, which is what makes an edit-compile-run loop usable by something that
 iterates as fast as an agent does.
 
-## 🪄 What the compiler writes for you
+## What the compiler writes for you
 
 `src/schema.wz` is 246 lines of declaration. From it the compiler generates the JSON
 parser and writer for every shape, the MCP tool table, the argument checking, the REST
@@ -106,7 +107,7 @@ separately from it.
 > version — a note, not a refusal, because a newer one usually works and the honest way to
 > find out is to try.
 
-## 📋 What the ticket system is for
+## What the ticket system is for
 
 The demo had to build something, and what it built is not arbitrary: **a ticket system for
 agentic work.** Not a normal tracker that agents happen to be able to call — one whose design starts from the problem that shows up the moment
@@ -155,7 +156,7 @@ Read `src/schema.wz` and you know the entire API. A field that is not declared t
 cannot be read or written — not as a validation error at run time, but as a program that
 does not compile.
 
-## 🚪 One port, three doors
+## One port, three doors
 
 They are not three servers. They are three ways into the same generated tool table:
 
@@ -173,7 +174,7 @@ GET  http://127.0.0.1:7777/tools.json     what exists, with a schema per tool
 **The page has no private route.** Dragging a card calls `update_ticket`, exactly as an
 agent would. If the board can do it, so can your agent, and the other way round.
 
-## 📄 Your tickets are files
+## Your tickets are files
 
 One markdown file per ticket. Frontmatter for the fields, the body for the story:
 
@@ -214,7 +215,7 @@ round-trips through the server with every field intact.
 **The tickets in `data/` are this project's own backlog.** Open the board and you are
 reading how the thing you are looking at was built.
 
-## ✨ What it does
+## What it does
 
 - **Two registers, one switch** — `human` and `agent` entries in the same ticket; fold the
   agent ones away without losing them.
@@ -233,7 +234,7 @@ reading how the thing you are looking at was built.
 - **`area` and `kind` are separate** — *where* the work sits versus *what kind* it is.
   Merging them is what makes "which bugs are open?" unanswerable.
 
-## 🔨 Building and testing
+## Building and testing
 
 ```bash
 ./wztrun              # build and serve
@@ -250,7 +251,7 @@ A test is an ordinary program that calls the tools directly — no server, no po
 client — so it runs in milliseconds and a failure points at a line. The compiler is the
 first thing that judges a test: one that does not compile is a failing test.
 
-## 🗂️ Layout
+## Layout
 
 ```
 src/schema.wz          the whole interface: the shapes and the tool table
@@ -269,7 +270,7 @@ docs/                  how it was built, in steps
 data/                  your tickets -- and this project's own backlog
 ```
 
-## 🚫 What it is not
+## What it is not
 
 Not multi-project, not multi-user, and not a Jira — and the last one is a choice, not a
 shortfall. Every field here had to earn its place by answering a question you actually ask
@@ -278,7 +279,7 @@ that is a different program. It holds 2,000
 tickets, 32 comments and 32 work log lines per ticket — enough for a real backlog, and
 stated rather than discovered.
 
-## 📜 The record
+## The record
 
 Built on 14 September 2026 by **Claude Code** with **Wantzel 0.1.2**, in about three hours.
 
@@ -286,7 +287,7 @@ Built on 14 September 2026 by **Claude Code** with **Wantzel 0.1.2**, in about t
 is a ticket there — including the ones that turned out to be wrong. Open the board and you
 are reading the history of the thing you are looking at, in the order it happened.
 
-## 🔗 Wantzel
+## Wantzel
 
 | | |
 |---|---|
