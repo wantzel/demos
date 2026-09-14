@@ -1,0 +1,34 @@
+# What GitHub shows about this repository, and why.
+#
+# GitHub decides a project's language by counting bytes per file, using Linguist. Left
+# alone it called this an HTML project at 75.8%, because it counted the generated
+# documentation and ignored the source entirely -- .wz is in fact the largest source here.
+
+# .wz is mapped to Pascal, and that is a deliberate compromise rather than a mistake.
+#
+# Linguist does not know Wantzel, and it will not for a long time: a new language is only
+# accepted once its extension appears in roughly 2000 files across public repositories.
+# Until then there are two options, and only one of them works:
+#
+#   *.wz linguist-language=Wantzel   -- FAILS SILENTLY. Linguist looks the name up, finds
+#       nothing, and treats every .wz file as undetected: no highlighting, and excluded
+#       from the language bar. That is worse than doing nothing.
+#
+#   *.wz linguist-language=Pascal    -- works. Pascal is a language Linguist knows, so the
+#       files are counted and highlighted. The grammar is not exact, but it agrees on what
+#       matters: begin/end, :=, both comment forms, strings.
+#
+# The label is wrong and the highlighting is right. Until Linguist knows the language, that
+# trade is the better of the two. The same line is in the compiler's own repository.
+*.wz linguist-language=Pascal
+
+# The documentation is generated from the markdown beside it and from the screenshot
+# tooling; it is output, not source, and counting it buries what the demo is written in.
+*/docs/*.html linguist-documentation
+*/docs/img/** linguist-documentation
+
+# The frontend that gets compiled into the binary. It is real source and worth reading,
+# but this is a demo of a compiler -- the language bar should say what the program is
+# written in, not what it serves.
+*/web/*.js linguist-vendored
+*/web/*.css linguist-vendored
