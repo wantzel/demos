@@ -1,6 +1,5 @@
 // claim_ticket / release_ticket: the conditional write that closes the gap
 // update_ticket leaves between reading who holds a ticket and writing who does.
-program test_claim;
 
 include "json.wz";
 include "mcphttp.wz";

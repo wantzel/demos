@@ -1,0 +1,97 @@
+// calcapp.wz -- the same calculator, written the way an application should be.
+//
+// There is no window code in this file. No structure offsets, no message loop, no callback,
+// no DLL name, no colour value. Those live in lib/win.wz, and what is left here is a
+// description of a calculator: which keys exist, what each one means, and what to show.
+//
+// That is the whole demonstration. The three other front ends in this directory each carry
+// their own platform code, which is honest but is not how you would build a second
+// application. This is.
+//
+//   wantzel src/calcapp.wz bin/calcapp.exe --target=windows
+
+
+include "io.wz";
+include "calc.wz";
+include "win32.wz";
+include "widgets.wz";
+
+const
+  ROWS = 6; COLS = 4;
+
+var
+  dbuf, ebuf: array[0..63] of char;
+  key:  array[0..23] of int;          // key index -> what it means
+  k, r, c: int;
+
+// What a key does. Negative is a digit; DIGIT0 is the digit zero, which cannot be -0.
+const DIGIT0 = 0 - 100;
+
+// Put a key on the grid and remember what it means.
+procedure place(label: str; row: int; col: int; means: int; fill: int; ink: int);
+var i: int;
+begin
+  i := win.key(label, row, col, fill, ink);
+  if i >= 0 then key[i] := means;
+end;
+
+// Redraw both display lines from the calculator's own state.
+procedure refresh;
+var dn, en: int;
+begin
+  dn := calc.text(dbuf);
+  en := calc.expr(ebuf);
+  win.show(ebuf, en, dbuf, dn);
+end;
+
+// A key was pressed. This is the only handler in the program.
+procedure win.dispatch(i: int);
+var means: int;
+begin
+  if (i < 0) or (i >= win.nkeys) then return;
+  means := key[i];
+  if means = DIGIT0 then calc.digit(0)
+  else if means < 0 then calc.digit(0 - means)
+  else calc.key(means);
+  refresh;
+end;
+
+begin
+  calc.reset;
+  win.open("Wantzel Calculator", 326, 560, COLS, ROWS);
+  win.display;
+
+  // The keypad. Reading this IS reading the layout -- which is the point of the split.
+  place("%",   0, 0, K_PCT,   WK.PAPER,  WK.MUTED);
+  place("CE",  0, 1, K_CE,    WK.PAPER,  WK.MUTED);
+  place("C",   0, 2, K_CLEAR, WK.PAPER,  WK.MUTED);
+  place("<-",  0, 3, K_BACK,  WK.PAPER,  WK.MUTED);
+
+  place("1/x", 1, 0, K_INV,   WK.CARD,   WK.INK);
+  place("x2",  1, 1, K_SQ,    WK.CARD,   WK.INK);
+  place("sqr", 1, 2, K_SQRT,  WK.CARD,   WK.INK);
+  place("/",   1, 3, K_DIV,   WK.SOFT,   WK.INK);
+
+  place("7",   2, 0, 0 - 7,   WK.CARD,   WK.INK);
+  place("8",   2, 1, 0 - 8,   WK.CARD,   WK.INK);
+  place("9",   2, 2, 0 - 9,   WK.CARD,   WK.INK);
+  place("*",   2, 3, K_MUL,   WK.SOFT,   WK.INK);
+
+  place("4",   3, 0, 0 - 4,   WK.CARD,   WK.INK);
+  place("5",   3, 1, 0 - 5,   WK.CARD,   WK.INK);
+  place("6",   3, 2, 0 - 6,   WK.CARD,   WK.INK);
+  place("-",   3, 3, K_SUB,   WK.SOFT,   WK.INK);
+
+  place("1",   4, 0, 0 - 1,   WK.CARD,   WK.INK);
+  place("2",   4, 1, 0 - 2,   WK.CARD,   WK.INK);
+  place("3",   4, 2, 0 - 3,   WK.CARD,   WK.INK);
+  place("+",   4, 3, K_ADD,   WK.SOFT,   WK.INK);
+
+  place("+/-", 5, 0, K_NEG,   WK.CARD,   WK.INK);
+  place("0",   5, 1, DIGIT0,  WK.CARD,   WK.INK);
+  place("00",  5, 2, DIGIT0,  WK.CARD,   WK.INK);
+  place("=",   5, 3, K_EQ,    WK.ACCENT, 16777215);
+
+  refresh;
+  win.run;
+end.

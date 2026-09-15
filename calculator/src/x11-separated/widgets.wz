@@ -1,0 +1,147 @@
+// widgets.wz -- keys, a grid, and the event loop.
+//
+// The layer between x11.wz (which knows the protocol) and main.wz (which knows what a
+// calculator is). Nothing here encodes a request or touches the socket; nothing here knows
+// what a key means either.
+//
+// An application describes keys, hands over two procedures, and calls ui.run. It never sees
+// a syscall, an event byte or a coordinate.
+
+
+const
+  UI.MAXKEYS = 48;
+
+type
+  UiKey = record
+    label: array[0..7] of char;
+    row:   int;
+    col:   int;
+    fill:  int;
+    ink:   int;
+  end;
+
+var
+  ui.keys:  array[0..UI.MAXKEYS - 1] of UiKey;
+  ui.nkeys: int;
+  ui.pad, ui.gap, ui.disph, ui.cols, ui.rows: int;
+  ui.downk: int;                       // which key is lit, or -1
+  ui.big, ui.small: int;                // the two fonts
+  ui.ondraw, ui.onkey: int;
+
+function ui.keyw: int;
+begin return (x.w - 2 * ui.pad - (ui.cols - 1) * ui.gap) div ui.cols; end;
+
+function ui.keyh: int;
+begin
+  return (x.h - 2 * ui.pad - ui.disph - ui.gap - (ui.rows - 1) * ui.gap) div ui.rows;
+end;
+
+function ui.keyx(c: int): int;
+begin return ui.pad + c * (ui.keyw + ui.gap); end;
+
+function ui.keyy(r: int): int;
+begin return ui.pad + ui.disph + ui.gap + r * (ui.keyh + ui.gap); end;
+
+// Add a key to the grid. Returns its index, which is what the handler is given.
+function ui.key(label: str; row: int; col: int; fill: int; ink: int): int;
+var k, j: int;
+begin
+  if ui.nkeys >= UI.MAXKEYS then return 0 - 1;
+  k := ui.nkeys;
+  j := 0;
+  while j < slen(label) do begin ui.keys[k].label[j] := schar(label, j); j := j + 1; end;
+  ui.keys[k].label[j] := chr(0);
+  ui.keys[k].row := row; ui.keys[k].col := col;
+  ui.keys[k].fill := fill; ui.keys[k].ink := ink;
+  ui.nkeys := ui.nkeys + 1;
+  return k;
+end;
+
+// Which key is at a point, or -1.
+function ui.at(px: int; py: int): int;
+var gx, gy, cc, rr, k: int;
+begin
+  gx := px - ui.pad;
+  gy := py - ui.pad - ui.disph - ui.gap;
+  if (gx < 0) or (gy < 0) then return 0 - 1;
+  cc := gx div (ui.keyw + ui.gap);
+  rr := gy div (ui.keyh + ui.gap);
+  if (cc >= ui.cols) or (rr >= ui.rows) then return 0 - 1;
+  k := 0;
+  while k < ui.nkeys do
+  begin
+    if (ui.keys[k].row = rr) and (ui.keys[k].col = cc) then return k;
+    k := k + 1;
+  end;
+  return 0 - 1;
+end;
+
+// Draw the whole keypad. The application supplies the two display lines.
+procedure ui.paintkeys(bg: int; card: int; rule: int);
+var k, kx, ky, kw, kh, fill, ink, lw: int;
+begin
+  k := 0;
+  while k < ui.nkeys do
+  begin
+    kx := ui.keyx(ui.keys[k].col); ky := ui.keyy(ui.keys[k].row);
+    kw := ui.keyw; kh := ui.keyh;
+    fill := ui.keys[k].fill; ink := ui.keys[k].ink;
+    if k = ui.downk then begin fill := ink; ink := bg; end;   // pressed: inverted
+    x.rect(kx, ky, kw, kh, fill);
+    x.rect(kx, ky + kh - 1, kw, 1, rule);
+    lw := 0; while ord(ui.keys[k].label[lw]) <> 0 do lw := lw + 1;
+    x.setfont(ui.small);
+    x.textbuf(kx + kw div 2 - lw * 5, ky + kh div 2 + 7, ui.keys[k].label, lw, ink);
+    k := k + 1;
+  end;
+end;
+
+procedure ui.open(w: int; h: int; cols: int; rows: int; bg: int; fg: int);
+begin
+  x.w := w; x.h := h; x.bg := bg; x.fg := fg; ui.cols := cols; ui.rows := rows;
+  ui.pad := 8; ui.gap := 6; ui.disph := 96;
+  ui.nkeys := 0; ui.downk := 0 - 1; x.alive := 1;
+end;
+
+// ---------------------------------------------------------------- the loop
+//
+// An application supplies two procedures and calls ui.run. Everything below -- the socket
+// read, the 32-byte event, the high bit that says "sent by another client", the coordinates
+// buried at offsets 24 and 26 -- stays in here.
+
+const UI.PRESS_MS = 90;             // how long a key stays lit after a click
+
+procedure ui.redraw; forward;       // the application draws the face
+procedure ui.pressed(k: int); forward;   // and answers a key
+
+procedure ui.run;
+var k, n: int;
+begin
+  ui.redraw;
+  while x.alive <> 0 do
+  begin
+    n := sys3(SYS.read, x.fd, addr(x.ev[0]), 32);
+    if n <= 0 then x.alive := 0
+    else
+    begin
+      k := ord(x.ev[0]) mod 128;
+      if k = EV_EXPOSE then ui.redraw
+      else if k = EV_BUTTON then
+      begin
+        ui.downk := ui.at(x.u16(x.ev, 24), x.u16(x.ev, 26));
+        if ui.downk >= 0 then
+        begin
+          ui.pressed(ui.downk);
+          ui.redraw;                      // with the key lit
+          x.nap[0] := 0; x.nap[1] := UI.PRESS_MS * 1000000;
+          n := sys2(SYS.nanosleep, addr(x.nap[0]), 0);
+          ui.downk := 0 - 1;
+          ui.redraw;                      // and back to rest
+        end;
+      end
+      else if k = EV_KEY then
+        if ord(x.ev[1]) = 9 then x.alive := 0;     // Escape closes the window
+    end;
+  end;
+  n := sys1(SYS.close, x.fd);
+end;

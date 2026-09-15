@@ -1,0 +1,220 @@
+// x11.wz -- a window on X11, and nothing above it.
+//
+// X11 is a binary protocol over a Unix socket. libX11 is an encoder for it, not a
+// privileged component, so a program that can open a socket can draw a window. Everything
+// that requires knowing the protocol lives here: the handshake, the resource ids, the
+// request lengths in units of four bytes, the fonts, and reading events off the socket.
+//
+// An application includes this file and calls x.rect, x.text and x.run. It never sees an
+// opcode.
+//
+// The one thing to know if something goes wrong: X11 answers errors ASYNCHRONOUSLY. A
+// malformed request does not stop the program, it simply draws nothing -- so the failure
+// mode here is almost never a message, it is "nothing happened".
+
+const
+  AF_UNIX = 1; SOCK_STREAM = 1;
+  EV_EXPOSE = 12; EV_BUTTON = 4; EV_KEY = 2;
+
+var
+  x.sa:   array[0..109] of char;
+  x.buf:  array[0..4095] of char;
+  x.rep:  array[0..16383] of char;
+  x.ev:   array[0..63] of char;
+  x.fd, x.base, x.mask, x.root, x.visual, x.wid, x.gc: int;
+  x.fid, x.fidb, x.w, x.h, x.alive, x.bg, x.fg: int;
+  x.nap: array[0..1] of int;
+
+// ---------------------------------------------------------------- little-endian helpers
+
+function x.u16(a: array of char; at: int): int;
+var i: int;
+begin return ord(a[at]) + 256 * ord(a[at + 1]); end;
+
+function x.u32(a: array of char; at: int): int;
+var i: int;
+begin return x.u16(a, at) + 65536 * x.u16(a, at + 2); end;
+
+procedure x.p8(v: int; at: int);
+var i: int;
+begin x.buf[at] := chr(v mod 256); end;
+
+procedure x.p16(v: int; at: int);
+var i: int;
+begin x.buf[at] := chr(v mod 256); x.buf[at + 1] := chr((v div 256) mod 256); end;
+
+procedure x.p32(v: int; at: int);
+begin x.p16(v mod 65536, at); x.p16((v div 65536) mod 65536, at + 2); end;
+
+procedure x.send(n: int);
+var k, i, total: int;
+begin k := sys3(SYS.write, x.fd, addr(x.buf[0]), n); end;
+
+procedure x.setfont(f: int);
+var i, total: int;
+begin
+  i := 0; while i < 16 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(56, 0); x.p16(4, 2); x.p32(x.gc, 4); x.p32(16384, 8); x.p32(f, 12);
+  x.send(16);
+end;
+
+procedure x.setfg(colour: int);
+var i, total: int;
+begin
+  // ChangeGC: opcode 56, x.mask 4 = foreground
+  i := 0; while i < 16 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(56, 0); x.p16(4, 2); x.p32(x.gc, 4); x.p32(4, 8); x.p32(colour, 12);
+  x.send(16);
+end;
+
+procedure x.rect(x: int; y: int; w: int; h: int; colour: int);
+var i, total: int;
+begin
+  x.setfg(colour);
+  // PolyFillRectangle: opcode 70, 3 + 2 words for one rectangle
+  i := 0; while i < 20 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(70, 0); x.p16(5, 2); x.p32(x.wid, 4); x.p32(x.gc, 8);
+  x.p16(x, 12); x.p16(y, 14); x.p16(w, 16); x.p16(h, 18);
+  x.send(20);
+end;
+
+// Draw x.text at (x, y) -- y is the BASELINE, not the top.
+procedure x.text(x: int; y: int; s: str; n: int; colour: int);
+var k, pad, total, i: int;
+begin
+  if n = 0 then return;
+  x.setfg(colour);
+  // PolyText8: opcode 74. One x.text item: a length byte, a delta byte, then the bytes.
+  total := 0;
+  pad := (4 - ((2 + n) mod 4)) mod 4;
+  total := 16 + 2 + n + pad;
+  i := 0; while i < total do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(74, 0); x.p16(total div 4, 2); x.p32(x.wid, 4); x.p32(x.gc, 8);
+  x.p16(x, 12); x.p16(y, 14);
+  x.p8(n, 16); x.p8(0, 17);
+  k := 0;
+  while k < n do begin x.buf[18 + k] := schar(s, k); k := k + 1; end;
+  x.send(total);
+end;
+
+procedure x.textbuf(x: int; y: int; a: array of char; n: int; colour: int);
+var k, total, pad, i: int;
+begin
+  if n = 0 then return;
+  x.setfg(colour);
+  pad := (4 - ((2 + n) mod 4)) mod 4;
+  total := 16 + 2 + n + pad;
+  i := 0; while i < total do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(74, 0); x.p16(total div 4, 2); x.p32(x.wid, 4); x.p32(x.gc, 8);
+  x.p16(x, 12); x.p16(y, 14);
+  x.p8(n, 16); x.p8(0, 17);
+  k := 0;
+  while k < n do begin x.buf[18 + k] := a[k]; k := k + 1; end;
+  x.send(total);
+end;
+
+// ---------------------------------------------------------------- drawing the face
+
+// One key. `down` lifts it: pressed keys get the soft accent, which is the house style's
+// way of saying "this is yours" -- it is the same field the site uses for what the reader
+// brings. The centring is by character count; the font is fixed-ish at this size.
+function x.connect: bool;
+var k, i: int;
+    p: str;
+begin
+  p := "/tmp/.X11-unix/X0";
+  i := 0; while i < len(x.sa) do begin x.sa[i] := chr(0); i := i + 1; end;
+  x.sa[0] := chr(AF_UNIX);
+  i := 0; while i < slen(p) do begin x.sa[2 + i] := schar(p, i); i := i + 1; end;
+  x.fd := sys3(SYS.socket, AF_UNIX, SOCK_STREAM, 0);
+  if x.fd < 0 then return false;
+  if sys3(SYS.connect, x.fd, addr(x.sa[0]), 110) <> 0 then return false;
+
+  i := 0; while i < 12 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.buf[0] := 'l'; x.buf[2] := chr(11);
+  x.send(12);
+  k := sys3(SYS.read, x.fd, addr(x.rep[0]), len(x.rep));
+  if ord(x.rep[0]) <> 1 then return false;
+
+  x.base := x.u32(x.rep, 12); x.mask := x.u32(x.rep, 16);
+  i := 40 + x.u16(x.rep, 24);
+  while (i mod 4) <> 0 do i := i + 1;
+  i := i + 8 * ord(x.rep[29]);
+  x.root := x.u32(x.rep, i);
+  x.visual := x.u32(x.rep, i + 32);
+  return true;
+end;
+
+procedure x.setup;
+var k, i, n: int;
+    t: str;
+begin
+  x.wid := bor(x.base, 1);
+  x.gc := bor(x.base, 2);
+
+  // CreateWindow, with a background and the events we want
+  i := 0; while i < 44 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(1, 0); x.p16(11, 2);                      // 8 fixed + 3 values
+  x.p32(x.wid, 4); x.p32(x.root, 8);
+  x.p16(80, 12); x.p16(80, 14); x.p16(x.w, 16); x.p16(x.h, 18);
+  x.p16(0, 20); x.p16(1, 22); x.p32(x.visual, 24);
+  // The value-x.mask names WHICH attributes follow, and the values come in bit order.
+  // These bits are the CreateWindow attributes -- not the event x.mask, which is a different
+  // set entirely. Mixing them up costs a BadValue and no window at all.
+  //     2 = background-pixel   64 = backing-store   2048 = event-x.mask
+  x.p32(2 + 64 + 2048, 28);
+  x.p32(x.bg, 32);                             // background-pixel
+  x.p32(1, 36);                                // backing-store: WhenMapped
+  x.p32(32768 + 4 + 1, 40);                    // event-x.mask: Exposure|ButtonPress|KeyPress
+  x.send(44);
+
+  // the title, so it is obvious which window this is
+  t := "Wantzel Calculator - X11";
+  n := slen(t);
+  i := 0; while i < 64 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(18, 0); x.p8(0, 1);
+  x.p16(6 + (n + 3) div 4, 2);
+  x.p32(x.wid, 4); x.p32(39, 8); x.p32(31, 12);
+  x.p8(8, 16); x.p32(n, 20);
+  i := 0; while i < n do begin x.buf[24 + i] := schar(t, i); i := i + 1; end;
+  x.send(24 + n + ((4 - (n mod 4)) mod 4));
+
+  // Two fonts: a big one for the number, a smaller one for the keys.
+  //
+  // The size in the name is the pixel height, and a name with 0-0-0-0 for the rest asks
+  // for a SCALABLE font -- the server renders it at whatever size you name. A fixed
+  // bitmap size that the server does not have fails silently and leaves the GC on its
+  // 6-pixel default, which is why the first attempt here looked tiny.
+  //
+  // Core fonts are not anti-aliased: a pixel is on or off, and no size changes that. It
+  // is a property of the 1987 protocol, not of this program. Larger simply hides it
+  // better; smooth x.text needs the XRender extension, which means parsing the font
+  // ourselves.
+  x.fid := bor(x.base, 3);
+  x.fidb := bor(x.base, 4);
+  t := "-adobe-helvetica-bold-r-normal--18-0-0-0-p-0-iso8859-1";
+  n := slen(t);
+  i := 0; while i < 80 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(45, 0); x.p16(3 + (n + 3) div 4, 2); x.p32(x.fid, 4); x.p16(n, 8);
+  i := 0; while i < n do begin x.buf[12 + i] := schar(t, i); i := i + 1; end;
+  x.send(12 + n + ((4 - (n mod 4)) mod 4));
+
+  t := "-adobe-helvetica-bold-r-normal--34-0-0-0-p-0-iso8859-1";
+  n := slen(t);
+  i := 0; while i < 80 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(45, 0); x.p16(3 + (n + 3) div 4, 2); x.p32(x.fidb, 4); x.p16(n, 8);
+  i := 0; while i < n do begin x.buf[12 + i] := schar(t, i); i := i + 1; end;
+  x.send(12 + n + ((4 - (n mod 4)) mod 4));
+
+  // a graphics context, with that font in it
+  i := 0; while i < 24 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(55, 0); x.p16(6, 2); x.p32(x.gc, 4); x.p32(x.wid, 8);
+  x.p32(4 + 16384, 12);                        // foreground | font
+  x.p32(x.fg, 16); x.p32(x.fid, 20);
+  x.send(24);
+
+  // MapWindow
+  i := 0; while i < 8 do begin x.buf[i] := chr(0); i := i + 1; end;
+  x.p8(8, 0); x.p16(2, 2); x.p32(x.wid, 4);
+  x.send(8);
+end;

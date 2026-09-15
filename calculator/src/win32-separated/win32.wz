@@ -1,0 +1,388 @@
+// win32.wz -- the platform, and nothing above it.
+//
+// Everything that requires knowing Win32: the WNDCLASSEXA layout and its byte offsets, the
+// callback the operating system calls, the message loop, the fonts, the manifest, and every
+// DLL and function name. It knows nothing about keys or a keypad.
+//
+// The one thing to know: on Windows the system calls YOU. A button click is sent straight to
+// a window procedure and never appears in the message loop, so this file has to exist -- an
+// application cannot avoid the callback, only avoid seeing it.
+
+// lib/win.wz -- a window with buttons on Win32, without any of it showing.
+//
+// Everything the platform demands lives in here: the class structure and its byte offsets,
+// the callback the operating system calls, the message loop, the fonts, the painting, and
+// the import names. An application includes this file, describes what it wants, and writes
+// ordinary procedures.
+//
+// The division is the point. On Windows the system calls YOU -- a button click is sent
+// straight to a window procedure and never appears in the message loop -- so there is no
+// way for an application to avoid a callback. There is a way for it to avoid ever seeing
+// one, and that is this file.
+//
+//   include "win.wz";
+//
+//   procedure onkey(id: int); forward;      // you write this
+//
+//   begin
+//     win.begin("Calculator", 320, 520);
+//     win.display(0, 0, 4);                 // a panel to write into
+//     win.key("7", 1, 0);                   // a key at row 1, column 0
+//     win.run(onkey);                       // returns when the window closes
+//   end.
+
+const
+  // messages
+  WK.DESTROY = 2; WK.COMMAND = 273; WK.SETFONT = 48;
+  WK.DRAWITEM = 43; WK.ERASEBKGND = 20; WK.CTLCOLORSTATIC = 312;
+  WK.MOUSEMOVE = 512; WK.MOUSELEAVE = 675;
+  // styles
+  WK.OVERLAPPED = 13565952; WK.CHILD = 1073741824; WK.VISIBLE = 268435456;
+  WK.OWNERDRAW = 11; WK.SS_RIGHT = 2; WK.SHOW = 5;
+  WK.SELECTED = 1;
+  // fonts
+  WK.NORMAL = 400; WK.SEMIBOLD = 600;
+  WK.ANSI = 0; WK.CLEARTYPE = 5; WK.DEFPITCH = 0;
+  // DRAWITEMSTRUCT on x64: CtlID at 4, NOT itemID at 8 -- for a button itemID stays 0
+  WK.DI_CTLID = 4; WK.DI_STATE = 16; WK.DI_HDC = 32; WK.DI_RECT = 40;
+  WK.TRANSPARENT = 1;
+  WK.DT_CENTER = 1; WK.DT_VCENTER = 4; WK.DT_SINGLE = 32;
+  // CreateFileA, for the manifest
+  WK.GENERIC_WRITE = 1073741824; WK.CREATE_ALWAYS = 2; WK.NORMALFILE = 128;
+  // FILE_APPEND_DATA plus OPEN_ALWAYS: every run adds a line instead of replacing the file,
+  // so three starts leave three measurements and the lowest can be picked.
+  WK.APPEND_DATA = 4; WK.OPEN_ALWAYS = 4;
+
+  WK.MAXKEYS = 48;
+  WK.IDBASE  = 1000;
+
+  // The palette an application gets unless it says otherwise. Win32 wants a COLORREF,
+  // which is 0x00BBGGRR -- the bytes are REVERSED against the #rrggbb these come from.
+  WK.PAPER  = 16317435;             // fbfaf8
+  WK.INK    = 1382426;              // 1a1815
+  WK.MUTED  = 5265502;              // 5e5850
+  WK.RULE   = 14016483;             // e3ded5
+  WK.ACCENT = 1589386;              // 8a4218
+  WK.SOFT   = 14345968;             // f0e4da
+  WK.CARD   = 16777215;             // ffffff
+  WK.HOVER  = 15790320;             // f0f0f0
+  WK.PRESS  = 14803425;             // e1e1e1
+
+type
+  WinKey = record
+    label:  array[0..7] of char;     // what it says
+    row:    int;
+    col:    int;
+    fill:   int;                     // the surface it sits on
+    ink:    int;                     // the colour of the text
+    span:   int;                     // how many columns wide (1 unless set)
+  end;
+
+var
+  win.keys:   array[0..WK.MAXKEYS - 1] of WinKey;
+  win.nkeys:  int;
+  win.wc:     array[0..127] of char;    // WNDCLASSEXA, 80 bytes on x64
+  win.msg:    array[0..47] of char;     // MSG, 48 bytes
+  win.rc:     array[0..15] of char;     // a RECT
+  win.tme:    array[0..23] of char;     // TRACKMOUSEEVENT
+  win.nwrit:  array[0..7] of char;
+  win.cname:  array[0..31] of char;
+  win.title:  array[0..127] of char;
+  win.bname:  array[0..15] of char;
+  win.tbuf:   array[0..31] of char;     // the painter's own text buffer
+  win.face:   array[0..31] of char;
+  win.dtext:  array[0..63] of char;
+  win.etext:  array[0..63] of char;
+  win.path:   array[0..511] of char;
+  win.body:   array[0..1023] of char;
+  win.hinst, win.hwnd, win.hdisp, win.hexpr, win.brush: int;
+  win.ftbuf: array[0..15] of char;      // FILETIME
+  win.pmc:   array[0..79] of char;      // PROCESS_MEMORY_COUNTERS, 72 bytes on x64
+  win.mbuf:  array[0..127] of char;
+  win.mpath: array[0..511] of char;
+  win.t0, win.t1: int;
+  win.fbig, win.fsmall, win.fkey: int;
+  win.w, win.h, win.pad, win.gap, win.cols, win.rows, win.disph: int;
+  win.hover, win.alive: int;
+
+// ---------------------------------------------------------------- bytes and buffers
+
+procedure win.zput(a: array of char; s: str);
+var k: int;
+begin
+  k := 0;
+  while k < slen(s) do begin a[k] := schar(s, k); k := k + 1; end;
+  a[k] := chr(0);
+end;
+
+procedure win.poke32(a: array of char; at: int; v: int);
+begin
+  a[at] := chr(v mod 256);
+  a[at + 1] := chr((v div 256) mod 256);
+  a[at + 2] := chr((v div 65536) mod 256);
+  a[at + 3] := chr((v div 16777216) mod 256);
+end;
+
+procedure win.poke64(a: array of char; at: int; v: int);
+begin
+  win.poke32(a, at, v mod 4294967296);
+  win.poke32(a, at + 4, v div 4294967296);
+end;
+
+function win.peek32(a: array of char; at: int): int;
+begin
+  return ord(a[at]) + 256 * ord(a[at + 1])
+       + 65536 * ord(a[at + 2]) + 16777216 * ord(a[at + 3]);
+end;
+
+
+// A signed 32-bit read. AdjustWindowRect returns a rectangle whose left and top are
+// NEGATIVE -- the border sits outside the client area -- and reading those as unsigned
+// gives about four billion.
+function win.peek32s(a: array of char; at: int): int;
+var v: int;
+begin
+  v := win.peek32(a, at);
+  if v >= 2147483648 then return v - 4294967296;
+  return v;
+end;
+
+function win.dipeek32(p: int; at: int): int;
+begin return win.peek32(view(p, 64), at); end;
+
+function win.dipeek64(p: int; at: int): int;
+begin
+  return win.peek32(view(p, 64), at) + 4294967296 * win.peek32(view(p, 64), at + 4);
+end;
+
+function win.put(a: array of char; at: int; s: str): int;
+var k: int;
+begin
+  k := 0;
+  while k < slen(s) do begin a[at + k] := schar(s, k); k := k + 1; end;
+  return at + k;
+end;
+
+
+// ---------------------------------------------------------------- measuring ourselves
+//
+// This runs in Windows Sandbox, where nothing is installed -- no profiler, no script, no
+// tool to add. So the program times itself and puts the answer where it can be read: in its
+// own title bar, and in a file beside the executable.
+//
+// FILETIME counts 100-nanosecond units, so a millisecond is 10,000 of them. The clock can
+// only start at our FIRST instruction, so this excludes the operating system's process
+// startup -- which is a smaller number than an external stopwatch gives, measuring a
+// different thing.
+
+function win.ticks: int;
+var k, j, v: int;
+begin
+  k := winapi("kernel32.dll", "GetSystemTimeAsFileTime", addr(win.ftbuf[0]));
+  v := 0; j := 7;
+  while j >= 0 do begin v := v * 256 + ord(win.ftbuf[j]); j := j - 1; end;
+  return v;
+end;
+
+// Peak working set in kB, or 0 if psapi will not answer. psapi.dll is not one of the
+// compiler's own imports -- it is named here in the source, like any other.
+function win.peak: int;
+var k, j: int;
+begin
+  j := 0; while j < 80 do begin win.pmc[j] := chr(0); j := j + 1; end;
+  win.poke32(win.pmc, 0, 72);
+  k := winapi("psapi.dll", "GetProcessMemoryInfo",
+              winapi("kernel32.dll", "GetCurrentProcess"), addr(win.pmc[0]), 72);
+  if k = 0 then return 0;
+  return (win.peek32(win.pmc, 8) + 4294967296 * win.peek32(win.pmc, 12)) div 1024;
+end;
+
+function win.putnum(a: array of char; at: int; v: int): int;
+var d: array[0..23] of char;
+    n, k: int;
+begin
+  if v = 0 then begin a[at] := chr(48); return at + 1; end;
+  n := 0;
+  while v > 0 do begin d[n] := chr(48 + (v mod 10)); v := v div 10; n := n + 1; end;
+  k := 0;
+  while k < n do begin a[at + k] := d[n - 1 - k]; k := k + 1; end;
+  return at + n;
+end;
+
+procedure win.timing;
+var ms, kb, n, k, fd: int;
+begin
+  ms := (win.t1 - win.t0) div 10000;
+  kb := win.peak;
+
+  n := 0;
+  n := win.put(win.title, n, "Wantzel Calculator - start ");
+  n := win.putnum(win.title, n, ms);
+  n := win.put(win.title, n, " ms");
+  if kb > 0 then
+  begin
+    n := win.put(win.title, n, ", peak ");
+    n := win.putnum(win.title, n, kb);
+    n := win.put(win.title, n, " kB");
+  end;
+  win.title[n] := chr(0);
+  k := winapi("user32.dll", "SetWindowTextA", win.hwnd, addr(win.title[0]));
+
+  // and to a file, so it does not have to be transcribed. In the sandbox the mapped folder
+  // may be read-only, in which case this fails quietly and the title bar is the answer.
+  n := 0;
+  n := win.put(win.mbuf, n, "start ");
+  n := win.putnum(win.mbuf, n, ms);
+  n := win.put(win.mbuf, n, " ms, peak working set ");
+  n := win.putnum(win.mbuf, n, kb);
+  n := win.put(win.mbuf, n, " kB");
+  win.mbuf[n] := chr(13); win.mbuf[n + 1] := chr(10); n := n + 2;
+
+  k := winapi("kernel32.dll", "GetModuleFileNameA", 0, addr(win.mpath[0]), 400);
+  if k <= 0 then return;
+  win.mpath[k] := chr(46); win.mpath[k + 1] := chr(116);
+  win.mpath[k + 2] := chr(120); win.mpath[k + 3] := chr(116);
+  win.mpath[k + 4] := chr(0);
+  fd := winapi("kernel32.dll", "CreateFileA", addr(win.mpath[0]),
+               WK.APPEND_DATA, 0, 0, WK.OPEN_ALWAYS, WK.NORMALFILE, 0);
+  if (fd = 0 - 1) or (fd = 0) then return;
+  k := winapi("kernel32.dll", "WriteFile", fd, addr(win.mbuf[0]), n, addr(win.nwrit[0]), 0);
+  k := winapi("kernel32.dll", "CloseHandle", fd);
+end;
+
+// The window procedure lives in widgets.wz -- it is the thing that turns a click into a key,
+// which is a widget question, not a platform one. It is declared here because win.open has
+// to hand its address to the system.
+function win.proc(hw: int; m: int; wp: int; lp: int): int; forward;
+
+// ---------------------------------------------------------------- what an application calls
+
+// A themed look needs a manifest beside the executable; it is a file, not a flag.
+procedure win.manifest;
+var fd, k, m: int;
+begin
+  k := winapi("kernel32.dll", "GetModuleFileNameA", 0, addr(win.path[0]), 500);
+  if k <= 0 then return;
+  m := 0; while m < 9 do begin win.path[k + m] := schar(".manifest", m); m := m + 1; end;
+  win.path[k + 9] := chr(0);
+  m := 0;
+  m := win.put(win.body, m, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+  m := win.put(win.body, m, "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n");
+  m := win.put(win.body, m, "<assemblyIdentity type=\"win32\" name=\"Wantzel.App\" version=\"1.0.0.0\"/>\n");
+  m := win.put(win.body, m, "<dependency><dependentAssembly><assemblyIdentity type=\"win32\"\n");
+  m := win.put(win.body, m, " name=\"Microsoft.Windows.Common-Controls\" version=\"6.0.0.0\"\n");
+  m := win.put(win.body, m, " processorArchitecture=\"*\" publicKeyToken=\"6595b64144ccf1df\" language=\"*\"/>\n");
+  m := win.put(win.body, m, "</dependentAssembly></dependency></assembly>\n");
+  // the Windows file API, not sysN: a syscall instruction means nothing in a PE
+  fd := winapi("kernel32.dll", "CreateFileA", addr(win.path[0]), WK.GENERIC_WRITE, 0, 0,
+               WK.CREATE_ALWAYS, WK.NORMALFILE, 0);
+  if fd = 0 - 1 then return;
+  if fd = 0 then return;
+  k := winapi("kernel32.dll", "WriteFile", fd, addr(win.body[0]), m, addr(win.nwrit[0]), 0);
+  k := winapi("kernel32.dll", "CloseHandle", fd);
+end;
+
+function win.font(px: int; weight: int): int;
+begin
+  return winapi("gdi32.dll", "CreateFontA",
+                0 - px, 0, 0, 0, weight, 0, 0, 0,
+                WK.ANSI, 0, 0, WK.CLEARTYPE, WK.DEFPITCH, addr(win.face[0]));
+end;
+
+// Open a window. Call this first.
+procedure win.open(caption: str; w: int; h: int; cols: int; rows: int);
+var atom, k: int;
+begin
+  win.t0 := win.ticks;
+  win.w := w; win.h := h; win.cols := cols; win.rows := rows;
+  win.pad := 8; win.gap := 6; win.disph := 96;
+  win.nkeys := 0; win.hover := 0 - 1; win.alive := 1;
+
+  win.manifest;
+  win.hinst := winapi("kernel32.dll", "GetModuleHandleA", 0);
+  win.zput(win.face, "Segoe UI");
+  win.fbig := win.font(34, WK.SEMIBOLD);
+  win.fsmall := win.font(14, WK.NORMAL);
+  win.fkey := win.font(17, WK.NORMAL);
+
+  // WNDCLASSEXA is 80 bytes on x64 and lpfnWndProc sits at 8, not 4: a pointer aligns
+  // to eight. Get that wrong and the system refuses the class without saying why.
+  k := 0; while k < 128 do begin win.wc[k] := chr(0); k := k + 1; end;
+  win.zput(win.cname, "WantzelWindow");
+  win.poke32(win.wc, 0, 80);
+  win.poke32(win.wc, 4, 3);
+  win.poke64(win.wc, 8, winproc(win.proc));
+  win.poke64(win.wc, 24, win.hinst);
+  win.poke64(win.wc, 48, 16);
+  win.poke64(win.wc, 64, addr(win.cname[0]));
+  atom := winapi("user32.dll", "RegisterClassExA", addr(win.wc[0]));
+
+  win.zput(win.title, caption);
+  // CreateWindowEx takes the OUTSIDE size: the client area plus border and title bar.
+  // Handing it the size we want to draw in makes the window too small, and the amount is
+  // not fixed -- it differs between Windows versions and between Windows and Wine, which is
+  // how this survived testing under Wine and showed up immediately on Windows 11.
+  //
+  // AdjustWindowRect turns the client rectangle we want into the outside rectangle to ask
+  // for. The RECT is four 32-bit values: left, top, right, bottom.
+  win.poke32(win.rc, 0, 0); win.poke32(win.rc, 4, 0);
+  win.poke32(win.rc, 8, w); win.poke32(win.rc, 12, h);
+  k := winapi("user32.dll", "AdjustWindowRect", addr(win.rc[0]), WK.OVERLAPPED, 0);
+  win.hwnd := winapi("user32.dll", "CreateWindowExA",
+                     0, addr(win.cname[0]), addr(win.title[0]),
+                     WK.OVERLAPPED, 120, 80,
+                     win.peek32s(win.rc, 8) - win.peek32s(win.rc, 0),
+                     win.peek32s(win.rc, 12) - win.peek32s(win.rc, 4),
+                     0, 0, win.hinst, 0);
+end;
+
+// Two right-aligned lines at the top: a small one and a large one.
+procedure win.display;
+var k: int;
+begin
+  win.zput(win.cname, "STATIC");
+  win.hexpr := winapi("user32.dll", "CreateWindowExA",
+                      0, addr(win.cname[0]), 0,
+                      bor(WK.CHILD, WK.VISIBLE) + WK.SS_RIGHT,
+                      win.pad + 14, win.pad + 14, win.w - 2 * win.pad - 44, 22,
+                      win.hwnd, 0, win.hinst, 0);
+  k := winapi("user32.dll", "SendMessageA", win.hexpr, WK.SETFONT, win.fsmall, 1);
+  win.hdisp := winapi("user32.dll", "CreateWindowExA",
+                      0, addr(win.cname[0]), 0,
+                      bor(WK.CHILD, WK.VISIBLE) + WK.SS_RIGHT,
+                      win.pad + 14, win.pad + 42, win.w - 2 * win.pad - 44, 46,
+                      win.hwnd, 0, win.hinst, 0);
+  k := winapi("user32.dll", "SendMessageA", win.hdisp, WK.SETFONT, win.fbig, 1);
+  win.zput(win.cname, "WantzelWindow");
+end;
+
+
+// Write the two display lines.
+procedure win.show(small: array of char; smalln: int; big: array of char; bign: int);
+var k: int;
+begin
+  k := 0; while k < smalln do begin win.etext[k] := small[k]; k := k + 1; end;
+  win.etext[smalln] := chr(0);
+  k := winapi("user32.dll", "SetWindowTextA", win.hexpr, addr(win.etext[0]));
+  k := 0; while k < bign do begin win.dtext[k] := big[k]; k := k + 1; end;
+  win.dtext[bign] := chr(0);
+  k := winapi("user32.dll", "SetWindowTextA", win.hdisp, addr(win.dtext[0]));
+end;
+
+// Show the window and run until it closes. Every click arrives at win.dispatch.
+procedure win.run;
+var k, n: int;
+begin
+  k := winapi("user32.dll", "ShowWindow", win.hwnd, WK.SHOW);
+
+  // the window is on screen: the honest moment to stop the clock
+  win.t1 := win.ticks;
+  win.timing;
+  while win.alive <> 0 do
+  begin
+    n := winapi("user32.dll", "GetMessageA", addr(win.msg[0]), 0, 0, 0);
+    if n <= 0 then return;
+    k := winapi("user32.dll", "TranslateMessage", addr(win.msg[0]));
+    k := winapi("user32.dll", "DispatchMessageA", addr(win.msg[0]));
+  end;
+end;

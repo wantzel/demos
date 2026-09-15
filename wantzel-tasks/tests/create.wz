@@ -1,5 +1,4 @@
 // create_ticket: what it fills in for you, and what it refuses.
-program test_create;
 
 include "json.wz";
 include "mcphttp.wz";

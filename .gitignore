@@ -2,3 +2,14 @@
 *.exe
 /**/demo
 /**/bin/
+
+# Generated log files never belong here. LogLens measures on files from 1 MB to 50 GB,
+# and fifty gigabytes in git cannot be taken out again -- what is once in the history
+# stays there, and a clone would be useless forever. wzlrun already refuses a directory
+# inside the repository; this is the net underneath that.
+*.log
+*.jsonl
+/**/logs/
+
+# built calculator binaries
+calculator/bin/

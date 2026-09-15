@@ -1,0 +1,484 @@
+// calcx11.wz -- the calculator as a native X11 application.
+//
+// No toolkit, no libX11, no dependency of any kind: X11 is a binary protocol over a Unix
+// socket, and this program speaks it directly. The arithmetic lives in calc.wz and knows
+// nothing about any of this.
+//
+//   wantzel src/calcx11.wz bin/calcx11 && ./bin/calcx11
+
+
+include "io.wz";
+include "calc.wz";
+
+const
+  AF_UNIX = 1; SOCK_STREAM = 1;
+
+  W = 326; H = 539;                 // the window, as in the reference screenshot
+  PAD = 8;                          // margin around everything
+  DISPH = 96;                       // the display panel
+  GAPY = 6; GAPX = 6;               // between keys
+  COLS = 4; ROWS = 6;
+
+  // event codes
+  EV_EXPOSE = 12; EV_BUTTON = 4; EV_KEY = 2;
+
+  // The Wantzel palette, from the house style. No colour is invented here: these are the
+  // same seven values the site and the docs use, so a screenshot of this belongs with the
+  // rest instead of looking like a stray application.
+  C_BG     = 16513784;              // fbfaf8  paper: the window
+  C_FG     = 1710101;               // 1a1815  ink
+  C_MUTED  = 6182992;               // 5e5850  secondary label
+  C_RULE   = 14933717;              // e3ded5  line, edge
+  C_ACCENT = 9060888;               // 8a4218  burnt orange: THE RESULT. Here: "="
+  C_SOFT   = 15787226;              // f0e4da  a soft accent field: the operators
+  C_CARD   = 16777215;              // ffffff  a raised surface: the digit keys
+
+  PRESS_MS = 90;                    // how long a key stays lit after a click
+
+var
+  sa:   array[0..109] of char;
+  buf:  array[0..4095] of char;
+  rep:  array[0..16383] of char;
+  ev:   array[0..63] of char;
+  dbuf: array[0..63] of char;
+  ebuf: array[0..63] of char;
+  fd, base, mask, root, visual, wid, gc, fid, fidb, i, n, dlen, elen: int;
+  downr, downc, k: int;
+  naptime: array[0..1] of int;
+  running: bool;
+
+// ---------------------------------------------------------------- little-endian helpers
+
+function u16(a: array of char; at: int): int;
+begin return ord(a[at]) + 256 * ord(a[at + 1]); end;
+
+function u32(a: array of char; at: int): int;
+begin return u16(a, at) + 65536 * u16(a, at + 2); end;
+
+procedure p8(v: int; at: int);
+begin buf[at] := chr(v mod 256); end;
+
+procedure p16(v: int; at: int);
+begin buf[at] := chr(v mod 256); buf[at + 1] := chr((v div 256) mod 256); end;
+
+procedure p32(v: int; at: int);
+begin p16(v mod 65536, at); p16((v div 65536) mod 65536, at + 2); end;
+
+procedure send(n: int);
+var k: int;
+begin k := sys3(SYS.write, fd, addr(buf[0]), n); end;
+
+// ---------------------------------------------------------------- the key grid
+//
+// Four columns, six rows, exactly the order of the reference:
+//     %   CE  C   <-
+//    1/x  x2  sqr /
+//     7   8   9   *
+//     4   5   6   -
+//     1   2   3   +
+//    +/-  0   ,   =
+
+function keyw: int;
+begin return (W - 2 * PAD - (COLS - 1) * GAPX) div COLS; end;
+
+function keyh: int;
+begin return (H - 2 * PAD - DISPH - GAPY - (ROWS - 1) * GAPY) div ROWS; end;
+
+function keyx(c: int): int;
+begin return PAD + c * (keyw + GAPX); end;
+
+function keyy(r: int): int;
+begin return PAD + DISPH + GAPY + r * (keyh + GAPY); end;
+
+// The label of the key at (row, col), as a string.
+function label(r: int; c: int): str;
+begin
+  if r = 0 then
+  begin
+    if c = 0 then return "%";
+    if c = 1 then return "CE";
+    if c = 2 then return "C";
+    return "<-";
+  end;
+  if r = 1 then
+  begin
+    if c = 0 then return "1/x";
+    if c = 1 then return "x2";
+    if c = 2 then return "sqr";
+    return "/";
+  end;
+  if r = 2 then
+  begin
+    if c = 0 then return "7";
+    if c = 1 then return "8";
+    if c = 2 then return "9";
+    return "*";
+  end;
+  if r = 3 then
+  begin
+    if c = 0 then return "4";
+    if c = 1 then return "5";
+    if c = 2 then return "6";
+    return "-";
+  end;
+  if r = 4 then
+  begin
+    if c = 0 then return "1";
+    if c = 1 then return "2";
+    if c = 2 then return "3";
+    return "+";
+  end;
+  if c = 0 then return "+/-";
+  if c = 1 then return "0";
+  if c = 2 then return ",";
+  return "=";
+end;
+
+// Is this key a digit? Those are white; the rest is grey, and "=" is blue.
+function isdigit(r: int; c: int): bool;
+begin
+  if (r >= 2) and (r <= 4) and (c <= 2) then return true;
+  if (r = 5) and (c = 1) then return true;
+  return false;
+end;
+
+// What pressing (row, col) means to calc.wz. Negative is a digit, 0 is "does nothing yet".
+function action(r: int; c: int): int;
+begin
+  if r = 0 then
+  begin
+    if c = 0 then return K_PCT;
+    if c = 1 then return K_CE;
+    if c = 2 then return K_CLEAR;
+    return K_BACK;
+  end;
+  if r = 1 then
+  begin
+    if c = 0 then return K_INV;
+    if c = 1 then return K_SQ;
+    if c = 2 then return K_SQRT;
+    return K_DIV;
+  end;
+  if r = 2 then
+  begin
+    if c = 0 then return 0 - 7;
+    if c = 1 then return 0 - 8;
+    if c = 2 then return 0 - 9;
+    return K_MUL;
+  end;
+  if r = 3 then
+  begin
+    if c = 0 then return 0 - 4;
+    if c = 1 then return 0 - 5;
+    if c = 2 then return 0 - 6;
+    return K_SUB;
+  end;
+  if r = 4 then
+  begin
+    if c = 0 then return 0 - 1;
+    if c = 1 then return 0 - 2;
+    if c = 2 then return 0 - 3;
+    return K_ADD;
+  end;
+  if c = 0 then return K_NEG;
+  if c = 1 then return 0 - 0 - 100;            // the digit zero, marked
+  if c = 2 then return 0;                      // the comma: this calculator is exact, whole numbers only
+  return K_EQ;
+end;
+
+// ---------------------------------------------------------------- X11 requests
+
+// Switch the GC to one of the two fonts. ChangeGC with mask 16384 = font.
+procedure setfont(f: int);
+begin
+  i := 0; while i < 16 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(56, 0); p16(4, 2); p32(gc, 4); p32(16384, 8); p32(f, 12);
+  send(16);
+end;
+
+procedure setfg(colour: int);
+begin
+  // ChangeGC: opcode 56, mask 4 = foreground
+  i := 0; while i < 16 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(56, 0); p16(4, 2); p32(gc, 4); p32(4, 8); p32(colour, 12);
+  send(16);
+end;
+
+procedure fillrect(x: int; y: int; w: int; h: int; colour: int);
+begin
+  setfg(colour);
+  // PolyFillRectangle: opcode 70, 3 + 2 words for one rectangle
+  i := 0; while i < 20 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(70, 0); p16(5, 2); p32(wid, 4); p32(gc, 8);
+  p16(x, 12); p16(y, 14); p16(w, 16); p16(h, 18);
+  send(20);
+end;
+
+// Draw text at (x, y) -- y is the BASELINE, not the top.
+procedure text(x: int; y: int; s: str; n: int; colour: int);
+var k, pad, total: int;
+begin
+  if n = 0 then return;
+  setfg(colour);
+  // PolyText8: opcode 74. One text item: a length byte, a delta byte, then the bytes.
+  total := 0;
+  pad := (4 - ((2 + n) mod 4)) mod 4;
+  total := 16 + 2 + n + pad;
+  i := 0; while i < total do begin buf[i] := chr(0); i := i + 1; end;
+  p8(74, 0); p16(total div 4, 2); p32(wid, 4); p32(gc, 8);
+  p16(x, 12); p16(y, 14);
+  p8(n, 16); p8(0, 17);
+  k := 0;
+  while k < n do begin buf[18 + k] := schar(s, k); k := k + 1; end;
+  send(total);
+end;
+
+procedure textbuf(x: int; y: int; a: array of char; n: int; colour: int);
+var k, total, pad: int;
+begin
+  if n = 0 then return;
+  setfg(colour);
+  pad := (4 - ((2 + n) mod 4)) mod 4;
+  total := 16 + 2 + n + pad;
+  i := 0; while i < total do begin buf[i] := chr(0); i := i + 1; end;
+  p8(74, 0); p16(total div 4, 2); p32(wid, 4); p32(gc, 8);
+  p16(x, 12); p16(y, 14);
+  p8(n, 16); p8(0, 17);
+  k := 0;
+  while k < n do begin buf[18 + k] := a[k]; k := k + 1; end;
+  send(total);
+end;
+
+// ---------------------------------------------------------------- drawing the face
+
+// One key. `down` lifts it: pressed keys get the soft accent, which is the house style's
+// way of saying "this is yours" -- it is the same field the site uses for what the reader
+// brings. The centring is by character count; the font is fixed-ish at this size.
+procedure key(r: int; c: int; s: str; lw: int);
+var x, y, w, h, fill, ink: int;
+begin
+  x := keyx(c); y := keyy(r); w := keyw; h := keyh;
+  if (r = 5) and (c = 3) then begin fill := C_ACCENT; ink := C_BG; end
+  else if isdigit(r, c) then begin fill := C_CARD; ink := C_FG; end
+  else begin fill := C_SOFT; ink := C_FG; end;
+  if (r = downr) and (c = downc) then
+  begin
+    // pressed: the accent, inverted text -- unmistakable and gone on the next paint
+    fill := C_ACCENT; ink := C_BG;
+  end;
+  fillrect(x, y, w, h, fill);
+  fillrect(x, y + h - 1, w, 1, C_RULE);        // a hairline, so keys read as separate
+  text(x + w div 2 - lw * 5, y + h div 2 + 7, s, lw, ink);
+end;
+
+
+procedure paint;
+var r, c, lw, tx: int;
+    s: str;
+begin
+  fillrect(0, 0, W, H, C_BG);
+
+  // the display panel, with the number right-aligned
+  // the display: a card with a rule under it, and the number in ink
+  fillrect(PAD, PAD, W - 2 * PAD, DISPH, C_CARD);
+  fillrect(PAD, PAD + DISPH - 1, W - 2 * PAD, 1, C_RULE);
+  setfont(fid);
+  // the expression so far, muted, above the number -- "88 +" while you type 5
+  elen := calc.expr(ebuf);
+  if elen > 0 then
+  begin
+    tx := W - PAD - 14 - elen * 10;
+    if tx < PAD + 6 then tx := PAD + 6;
+    textbuf(tx, PAD + 32, ebuf, elen, C_MUTED);
+  end;
+
+  // and the number itself, big and in ink
+  setfont(fidb);
+  dlen := calc.text(dbuf);
+  tx := W - PAD - 14 - dlen * 19;
+  if tx < PAD + 6 then tx := PAD + 6;
+  textbuf(tx, PAD + DISPH - 22, dbuf, dlen, C_FG);
+  setfont(fid);
+
+  // the keys
+  r := 0;
+  while r < ROWS do
+  begin
+    c := 0;
+    while c < COLS do
+    begin
+      s := label(r, c);
+      lw := slen(s);
+      key(r, c, s, lw);
+      c := c + 1;
+    end;
+    r := r + 1;
+  end;
+end;
+
+// ---------------------------------------------------------------- input
+
+procedure click(x: int; y: int);
+var r, c, a: int;
+begin
+  c := 0;
+  while c < COLS do
+  begin
+    r := 0;
+    while r < ROWS do
+    begin
+      if (x >= keyx(c)) and (x < keyx(c) + keyw) and
+         (y >= keyy(r)) and (y < keyy(r) + keyh) then
+      begin
+        a := action(r, c);
+        downr := r; downc := c;              // light it up; the next paint shows it
+        if a = 0 - 100 then calc.digit(0)
+        else if a < 0 then calc.digit(0 - a)
+        else if a > 0 then calc.key(a);
+        return;
+      end;
+      r := r + 1;
+    end;
+    c := c + 1;
+  end;
+end;
+
+// ---------------------------------------------------------------- connect and run
+
+function connect: bool;
+var k: int;
+    p: str;
+begin
+  p := "/tmp/.X11-unix/X0";
+  i := 0; while i < len(sa) do begin sa[i] := chr(0); i := i + 1; end;
+  sa[0] := chr(AF_UNIX);
+  i := 0; while i < slen(p) do begin sa[2 + i] := schar(p, i); i := i + 1; end;
+  fd := sys3(SYS.socket, AF_UNIX, SOCK_STREAM, 0);
+  if fd < 0 then return false;
+  if sys3(SYS.connect, fd, addr(sa[0]), 110) <> 0 then return false;
+
+  i := 0; while i < 12 do begin buf[i] := chr(0); i := i + 1; end;
+  buf[0] := 'l'; buf[2] := chr(11);
+  send(12);
+  k := sys3(SYS.read, fd, addr(rep[0]), len(rep));
+  if ord(rep[0]) <> 1 then return false;
+
+  base := u32(rep, 12); mask := u32(rep, 16);
+  i := 40 + u16(rep, 24);
+  while (i mod 4) <> 0 do i := i + 1;
+  i := i + 8 * ord(rep[29]);
+  root := u32(rep, i);
+  visual := u32(rep, i + 32);
+  return true;
+end;
+
+procedure setup;
+var k: int;
+    t: str;
+begin
+  wid := bor(base, 1);
+  gc := bor(base, 2);
+
+  // CreateWindow, with a background and the events we want
+  i := 0; while i < 44 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(1, 0); p16(11, 2);                      // 8 fixed + 3 values
+  p32(wid, 4); p32(root, 8);
+  p16(80, 12); p16(80, 14); p16(W, 16); p16(H, 18);
+  p16(0, 20); p16(1, 22); p32(visual, 24);
+  // The value-mask names WHICH attributes follow, and the values come in bit order.
+  // These bits are the CreateWindow attributes -- not the event mask, which is a different
+  // set entirely. Mixing them up costs a BadValue and no window at all.
+  //     2 = background-pixel   64 = backing-store   2048 = event-mask
+  p32(2 + 64 + 2048, 28);
+  p32(C_BG, 32);                             // background-pixel
+  p32(1, 36);                                // backing-store: WhenMapped
+  p32(32768 + 4 + 1, 40);                    // event-mask: Exposure|ButtonPress|KeyPress
+  send(44);
+
+  // the title, so it is obvious which window this is
+  t := "Wantzel Calculator - X11";
+  n := slen(t);
+  i := 0; while i < 64 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(18, 0); p8(0, 1);
+  p16(6 + (n + 3) div 4, 2);
+  p32(wid, 4); p32(39, 8); p32(31, 12);
+  p8(8, 16); p32(n, 20);
+  i := 0; while i < n do begin buf[24 + i] := schar(t, i); i := i + 1; end;
+  send(24 + n + ((4 - (n mod 4)) mod 4));
+
+  // Two fonts: a big one for the number, a smaller one for the keys.
+  //
+  // The size in the name is the pixel height, and a name with 0-0-0-0 for the rest asks
+  // for a SCALABLE font -- the server renders it at whatever size you name. A fixed
+  // bitmap size that the server does not have fails silently and leaves the GC on its
+  // 6-pixel default, which is why the first attempt here looked tiny.
+  //
+  // Core fonts are not anti-aliased: a pixel is on or off, and no size changes that. It
+  // is a property of the 1987 protocol, not of this program. Larger simply hides it
+  // better; smooth text needs the XRender extension, which means parsing the font
+  // ourselves.
+  fid := bor(base, 3);
+  fidb := bor(base, 4);
+  t := "-adobe-helvetica-bold-r-normal--18-0-0-0-p-0-iso8859-1";
+  n := slen(t);
+  i := 0; while i < 80 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(45, 0); p16(3 + (n + 3) div 4, 2); p32(fid, 4); p16(n, 8);
+  i := 0; while i < n do begin buf[12 + i] := schar(t, i); i := i + 1; end;
+  send(12 + n + ((4 - (n mod 4)) mod 4));
+
+  t := "-adobe-helvetica-bold-r-normal--34-0-0-0-p-0-iso8859-1";
+  n := slen(t);
+  i := 0; while i < 80 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(45, 0); p16(3 + (n + 3) div 4, 2); p32(fidb, 4); p16(n, 8);
+  i := 0; while i < n do begin buf[12 + i] := schar(t, i); i := i + 1; end;
+  send(12 + n + ((4 - (n mod 4)) mod 4));
+
+  // a graphics context, with that font in it
+  i := 0; while i < 24 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(55, 0); p16(6, 2); p32(gc, 4); p32(wid, 8);
+  p32(4 + 16384, 12);                        // foreground | font
+  p32(C_FG, 16); p32(fid, 20);
+  send(24);
+
+  // MapWindow
+  i := 0; while i < 8 do begin buf[i] := chr(0); i := i + 1; end;
+  p8(8, 0); p16(2, 2); p32(wid, 4);
+  send(8);
+end;
+
+begin
+  calc.reset;
+  if not connect then
+  begin
+    io.puts(STDERR, "calcx11: cannot reach the X server at /tmp/.X11-unix/X0\n");
+    halt(1);
+  end;
+  setup;
+
+  running := true;
+  while running do
+  begin
+    n := sys3(SYS.read, fd, addr(ev[0]), 32);
+    if n <= 0 then running := false
+    else
+    begin
+      i := ord(ev[0]) mod 128;               // the high bit says "sent by another client"
+      if i = EV_EXPOSE then paint
+      else if i = EV_BUTTON then
+      begin
+        click(u16(ev, 24), u16(ev, 26));     // event-x, event-y
+        paint;                               // with the key lit
+        naptime[0] := 0; naptime[1] := PRESS_MS * 1000000;
+        k := sys2(SYS.nanosleep, addr(naptime[0]), 0);
+        downr := 0 - 1; downc := 0 - 1;
+        paint;                               // and back to rest
+      end
+      else if i = EV_KEY then
+      begin
+        // Escape (keycode 9) closes the window
+        if ord(ev[1]) = 9 then running := false;
+      end;
+    end;
+  end;
+  sys1(SYS.close, fd);
+end.

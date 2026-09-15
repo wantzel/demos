@@ -7,8 +7,6 @@ test is simply a Wantzel program that calls that function directly and checks wh
 returned. `tests/create.wz` is representative:
 
 ```pascal
-program test_create;
-
 include "json.wz";
 include "mcphttp.wz";
 include "router.wz";

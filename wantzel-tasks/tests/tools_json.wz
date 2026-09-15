@@ -7,7 +7,6 @@
 //
 // The lesson is narrow and worth keeping: a value shaped for one transport is not
 // automatically a document for another.
-program test_tools_json;
 
 include "json.wz";
 include "mcphttp.wz";

@@ -1,0 +1,45 @@
+// _helpers.wz -- what a loglens test needs. Included by tests, not a test itself: the
+// leading underscore is what tells wzltest to skip it.
+//
+// A test is a program that exits 0 when it passes. There is no framework here for the
+// same reason there is none in the compiler's own suite: a test is a program, and the
+// compiler is the first thing that judges it.
+
+include "io.wz";
+
+var
+  t.fails: int;
+
+procedure t.ok(what: str; cond: bool);
+begin
+  if cond then
+  begin
+    io.puts(STDOUT, "  ok    "); io.puts(STDOUT, what); io.puts(STDOUT, "\n");
+  end
+  else
+  begin
+    io.puts(STDOUT, "  FAIL  "); io.puts(STDOUT, what); io.puts(STDOUT, "\n");
+    t.fails := t.fails + 1;
+  end;
+end;
+
+procedure t.eqint(what: str; got: int; want: int);
+begin
+  if got = want then
+  begin
+    io.puts(STDOUT, "  ok    "); io.puts(STDOUT, what); io.puts(STDOUT, "\n");
+  end
+  else
+  begin
+    io.puts(STDOUT, "  FAIL  "); io.puts(STDOUT, what);
+    io.puts(STDOUT, ": expected "); io.putn(STDOUT, want);
+    io.puts(STDOUT, ", got "); io.putn(STDOUT, got);
+    io.puts(STDOUT, "\n");
+    t.fails := t.fails + 1;
+  end;
+end;
+
+procedure t.done;
+begin
+  if t.fails > 0 then halt(1);
+end;

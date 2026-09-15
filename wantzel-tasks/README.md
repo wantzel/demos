@@ -102,7 +102,7 @@ routes, and **30 kB of JSON Schema** served at `/tools.json` — none of which i
 repository, and none of which can drift from the declaration, because it does not exist
 separately from it.
 
-> **Built and tested with Wantzel 0.1.2** (commit `2f303c3`). The language is before 1.0
+> **Built with Wantzel 0.1.2, tested against 0.2.1.** The language is before 1.0
 > and still moving, so `wztrun` and `wzttest` say so if your compiler is a different
 > version — a note, not a refusal, because a newer one usually works and the honest way to
 > find out is to try.

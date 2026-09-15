@@ -1,0 +1,216 @@
+// calc.wz -- the arithmetic of a calculator, with no screen in it at all.
+//
+// This half knows nothing about X11 or Windows: it takes key presses and answers with what
+// the display should read. That is what makes it testable without a window, and it is the
+// part the two platform files share.
+//
+// The model is the one every calculator uses: an accumulator, a pending operator, and the
+// number currently being typed.
+
+const
+  K_CLEAR = 1;      // C
+  K_EQ    = 2;      // =
+  K_ADD   = 3;
+  K_SUB   = 4;
+  K_MUL   = 5;
+  K_DIV   = 6;
+  K_NEG   = 7;      // +/-
+  K_PCT   = 8;      // %
+  K_CE    = 9;      // clear entry
+  K_BACK  = 10;     // backspace
+  K_INV   = 11;     // 1/x
+  K_SQ    = 12;     // x squared
+  K_SQRT  = 13;     // square root
+
+var
+  calc.acc:     int;      // what we have so far
+  calc.cur:     int;      // the number being typed
+  calc.op:      int;      // the operator waiting for a right-hand side
+  calc.typing:  bool;     // is cur being entered, or is it a result?
+  calc.err:     int;      // 0 = fine, otherwise which refusal the display shows
+  calc.neg:     bool;     // the typed number is negative
+
+procedure calc.reset;
+begin
+  calc.acc := 0; calc.cur := 0; calc.op := 0;
+  calc.typing := false; calc.err := 0; calc.neg := false;
+end;
+
+// The value on the display right now.
+function calc.value: int;
+begin
+  if calc.typing then
+  begin
+    if calc.neg then return 0 - calc.cur;
+    return calc.cur;
+  end;
+  return calc.acc;
+end;
+
+// Apply the pending operator to acc and the value just entered.
+procedure calc.apply(v: int);
+begin
+  if calc.op = K_ADD then calc.acc := calc.acc + v
+  else if calc.op = K_SUB then calc.acc := calc.acc - v
+  else if calc.op = K_MUL then calc.acc := calc.acc * v
+  else if calc.op = K_DIV then
+  begin
+    if v = 0 then begin calc.err := 1; calc.acc := 0; end
+    else calc.acc := calc.acc div v;
+  end
+  else calc.acc := v;                 // no operator pending: the value stands
+end;
+
+procedure calc.digit(d: int);
+begin
+  if calc.err <> 0 then calc.reset;
+  if not calc.typing then begin calc.cur := 0; calc.neg := false; calc.typing := true; end;
+  // refuse to grow past what an int holds, rather than wrap silently
+  if calc.cur <= 999999999999999999 div 10 then calc.cur := calc.cur * 10 + d;
+end;
+
+// Integer square root by bisection: this calculator works in whole numbers, so sqrt(10)
+// is 3. No reals are involved anywhere, which is what keeps the whole thing exact.
+function calc.isqrt(v: int): int;
+var lo, hi, mid: int;
+begin
+  if v < 2 then return v;
+  lo := 1; hi := v;
+  while lo < hi do
+  begin
+    mid := lo + (hi - lo + 1) div 2;
+    if mid <= v div mid then lo := mid else hi := mid - 1;
+  end;
+  return lo;
+end;
+
+procedure calc.key(k: int);
+var v: int;
+begin
+  if (calc.err <> 0) and (k <> K_CLEAR) and (k <> K_CE) then return;
+
+  if k = K_CLEAR then begin calc.reset; return; end;
+  if k = K_CE then begin calc.cur := 0; calc.neg := false; calc.typing := true; calc.err := 0; return; end;
+
+  if k = K_BACK then
+  begin
+    if calc.typing then calc.cur := calc.cur div 10;
+    return;
+  end;
+
+  if k = K_NEG then
+  begin
+    if calc.typing then calc.neg := not calc.neg
+    else calc.acc := 0 - calc.acc;
+    return;
+  end;
+
+  if k = K_INV then
+  begin
+    v := calc.value;
+    if v = 0 then begin calc.err := 1; return; end;
+    calc.acc := 1 div v;                 // whole numbers only: 1/x is 0 for |x| > 1
+    calc.typing := false;
+    return;
+  end;
+
+  if k = K_SQ then
+  begin
+    v := calc.value;
+    calc.acc := v * v;
+    calc.typing := false;
+    return;
+  end;
+
+  if k = K_SQRT then
+  begin
+    v := calc.value;
+    if v < 0 then begin calc.err := 2; return; end;
+    calc.acc := calc.isqrt(v);
+    calc.typing := false;
+    return;
+  end;
+
+  if k = K_PCT then
+  begin
+    v := calc.value;
+    if calc.typing then begin calc.cur := v div 100; calc.neg := false; end
+    else calc.acc := v div 100;
+    return;
+  end;
+
+  if (k >= K_ADD) and (k <= K_DIV) then
+  begin
+    v := calc.value;
+    if calc.typing then calc.apply(v) else if calc.op = 0 then calc.acc := v;
+    calc.op := k;
+    calc.typing := false;
+    return;
+  end;
+
+  if k = K_EQ then
+  begin
+    v := calc.value;
+    if calc.typing then calc.apply(v);
+    calc.op := 0;
+    calc.typing := false;
+    return;
+  end;
+end;
+
+// The line above the number: what has been entered so far, like "88 +" while you type the
+// second operand. Empty when nothing is pending. This is what tells you which sum you are
+// in the middle of, and every calculator shows it.
+function calc.expr(b: array of char): int;
+var v, n, i, k: int;
+    d: array[0..31] of char;
+begin
+  if calc.op = 0 then return 0;
+  v := calc.acc;
+  n := 0;
+  if v < 0 then begin b[0] := '-'; n := 1; v := 0 - v; end;
+  if v = 0 then begin b[0] := '0'; n := 1; end
+  else
+  begin
+    k := 0;
+    while v > 0 do begin d[k] := chr(48 + (v mod 10)); v := v div 10; k := k + 1; end;
+    while k > 0 do begin k := k - 1; b[n] := d[k]; n := n + 1; end;
+  end;
+  b[n] := ' '; n := n + 1;
+  if calc.op = K_ADD then b[n] := '+'
+  else if calc.op = K_SUB then b[n] := '-'
+  else if calc.op = K_MUL then b[n] := '*'
+  else b[n] := '/';
+  return n + 1;
+end;
+
+// Write the display into b, right-aligned is the caller's business; returns the length.
+function calc.text(b: array of char): int;
+var v, n, i, k: int;
+    d: array[0..31] of char;
+begin
+  // A refusal says WHICH one. One message for every failure would be a smaller lie than
+  // a wrong answer, but it is still a lie: the two cannot be told apart by the reader.
+  if calc.err = 1 then
+  begin
+    i := 0;
+    while i < slen("cannot divide by zero") do
+    begin b[i] := schar("cannot divide by zero", i); i := i + 1; end;
+    return i;
+  end;
+  if calc.err = 2 then
+  begin
+    i := 0;
+    while i < slen("no root of a negative") do
+    begin b[i] := schar("no root of a negative", i); i := i + 1; end;
+    return i;
+  end;
+  v := calc.value;
+  n := 0;
+  if v < 0 then begin b[0] := '-'; n := 1; v := 0 - v; end;
+  if v = 0 then begin b[n] := '0'; return n + 1; end;
+  k := 0;
+  while v > 0 do begin d[k] := chr(48 + (v mod 10)); v := v div 10; k := k + 1; end;
+  while k > 0 do begin k := k - 1; b[n] := d[k]; n := n + 1; end;
+  return n;
+end;

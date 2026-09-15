@@ -5,7 +5,6 @@
 // by hand, before this field existed, has no audience marker at all and must still load
 // as "human". A ticket system that breaks on its own old files is not one you can trust
 // to keep editing by hand.
-program test_audience;
 
 include "json.wz";
 include "mcphttp.wz";

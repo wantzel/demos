@@ -1,0 +1,787 @@
+// calcwin.wz -- the same calculator, as a native Windows application.
+//
+// It shares src/calc.wz with the X11 version, and everything below it differs. Three things
+// separate a window that looks like 1995 from one that looks like today, and none of them is
+// obvious from the API:
+//
+//   1. A MANIFEST. Windows ships two versions of its controls -- ComCtl32 5 and 6 -- and
+//      gives you 5 unless an application manifest asks for 6. Themed buttons are not a flag
+//      you set in code; they are a file you ship.
+//   2. A FONT. The default for a control is the System font from Windows 95. Segoe UI is
+//      what every modern Windows program uses, and it has to be created and assigned.
+//   3. COLOUR. A window painted with a system brush follows the theme; one painted with our
+//      own colours does not follow anything, which is why the display panel is drawn and the
+//      buttons are left to Windows.
+//
+// It shares src/calc.wz with the X11 version: the arithmetic is identical and knows nothing
+// about either platform. What differs is everything below, and the difference is the point
+// of the demo -- on Windows the system draws the buttons and calls us back; on X11 we draw
+// every pixel and read events ourselves.
+//
+//   wantzel src/calcwin.wz bin/calcwin.exe --target=windows
+
+
+include "io.wz";
+include "calc.wz";
+
+const
+  W = 326; H = 560;
+  PAD = 8; DISPH = 96; GAPY = 6; GAPX = 6;
+  COLS = 4; ROWS = 6;
+
+  // window messages
+  WM_DESTROY = 2; WM_COMMAND = 273; WM_CLOSE = 16;
+  // window styles
+  WS_OVERLAPPEDWINDOW = 13565952;
+  WS_CHILD = 1073741824; WS_VISIBLE = 268435456;
+  BS_PUSHBUTTON = 0;
+  SW_SHOW = 5;
+  // the first control id; the grid runs from here
+  ID_BASE = 1000;
+
+  // messages we answer to make the face our own
+  WM_SETFONT = 48; WM_CTLCOLORSTATIC = 312; WM_SIZE = 5;
+  // CreateFontA wants a weight; 400 is regular, 600 semibold
+  FW_NORMAL = 400; FW_SEMIBOLD = 600;
+  ANSI_CHARSET = 0; CLEARTYPE_QUALITY = 5; DEFAULT_PITCH = 0;
+  // CreateFileA: write access, no sharing, always create, normal attributes
+  GENERIC_WRITE = 1073741824; CREATE_ALWAYS = 2; FILE_ATTRIBUTE_NORMAL = 128;
+  INVALID_HANDLE = 0 - 1;
+
+  // Owner-draw: the button tells us to paint it instead of painting itself.
+  BS_OWNERDRAW = 11;
+  WM_DRAWITEM = 43;
+  WM_MOUSEMOVE = 512; WM_MOUSELEAVE = 675;
+  WM_ERASEBKGND = 20;
+  ODS_SELECTED = 1;
+
+  // DRAWITEMSTRUCT on x64, by offset. Laid out by hand from the Microsoft definition:
+  // six UINTs (with padding), then the HWND, the HDC, then the RECT as four LONGs.
+  // CtlID, not itemID: for a BUTTON the identifier is CtlID at offset 4. itemID is for a
+  // list or menu item and stays 0 here, which drew every key with the same label.
+  DI_CTLID = 4; DI_STATE = 16; DI_HDC = 32; DI_RECT = 40;
+
+  // The Wantzel palette. Win32 wants a COLORREF, which is 0x00BBGGRR -- the BYTES ARE
+  // REVERSED against the #rrggbb the house style is written in, and getting that wrong
+  // gives colours that look almost right, which is worse than obviously wrong.
+  C_BG     = 16317435;              // fbfaf8 -> f8fafb  paper
+  C_FG     = 1382426;               // 1a1815 -> 15181a  ink
+  C_MUTED  = 5265502;               // 5e5850 -> 50585e  secondary label
+  C_RULE   = 14016483;              // e3ded5 -> d5dee3  line, edge
+  C_ACCENT = 1589386;               // 8a4218 -> 18428a  burnt orange: the result key
+  C_SOFT   = 14345968;              // f0e4da -> dae4f0  soft accent: the operators
+  C_CARD   = 16777215;              // ffffff            a raised surface: the digit keys
+  C_HOVER  = 15790320;              // f0f0f0            a card, lifted
+  C_PRESS  = 14803425;              // e1e1e1            a card, pushed in
+
+  TRANSPARENT = 1;                  // SetBkMode: draw glyphs without a background box
+  DT_CENTER = 1; DT_VCENTER = 4; DT_SINGLELINE = 32;
+
+var
+  wc:    array[0..127] of char;      // WNDCLASSEXA, 80 bytes on x64
+  cname: array[0..31] of char;
+  title: array[0..127] of char;
+  bname: array[0..15] of char;       // "BUTTON"
+  dtext: array[0..63] of char;       // what the display reads
+  etext: array[0..63] of char;       // the expression above it
+  msg:   array[0..47] of char;
+  wrc:   array[0..15] of char;       // a RECT for AdjustWindowRect       // MSG, 48 bytes on x64
+  hinst, hwnd, hdisp, hexpr, atom, r, c, i, n: int;
+  fbig, fsmall, fkey, fname: int;
+  segoe: array[0..31] of char;
+  nwrit: array[0..7] of char;        // WriteFile's lpNumberOfBytesWritten
+  defproc, running: int;
+  hover: int;                        // the control id the mouse is over, or -1
+  tme:   array[0..23] of char;       // TRACKMOUSEEVENT, 24 bytes on x64
+  rc:    array[0..15] of char;       // a RECT to hand to the drawing calls
+  brush, pen: int;
+  tbuf:  array[0..31] of char;       // the painter's own text buffer: cname belongs to build
+
+// ---------------------------------------------------------------- little helpers
+
+procedure zput(a: array of char; s: str);
+var k: int;
+begin
+  k := 0;
+  while k < slen(s) do begin a[k] := schar(s, k); k := k + 1; end;
+  a[k] := chr(0);
+end;
+
+// append s at position at, and return the new position
+function put(a: array of char; at: int; s: str): int;
+var k: int;
+begin
+  k := 0;
+  while k < slen(s) do begin a[at + k] := schar(s, k); k := k + 1; end;
+  return at + slen(s);
+end;
+
+// append s at position n of a NUL-terminated buffer
+procedure zput2(a: array of char; n: int; s: str);
+var k: int;
+begin
+  k := 0;
+  while k < slen(s) do begin a[n + k] := schar(s, k); k := k + 1; end;
+  a[n + slen(s)] := chr(0);
+end;
+
+procedure poke32(a: array of char; at: int; v: int);
+begin
+  a[at] := chr(v mod 256);
+  a[at + 1] := chr((v div 256) mod 256);
+  a[at + 2] := chr((v div 65536) mod 256);
+  a[at + 3] := chr((v div 16777216) mod 256);
+end;
+
+procedure poke64(a: array of char; at: int; v: int);
+begin
+  poke32(a, at, v mod 4294967296);
+  poke32(a, at + 4, v div 4294967296);
+end;
+
+function peek32(a: array of char; at: int): int;
+begin
+  return ord(a[at]) + 256 * ord(a[at + 1])
+       + 65536 * ord(a[at + 2]) + 16777216 * ord(a[at + 3]);
+end;
+
+// A signed 32-bit read. AdjustWindowRect returns a rectangle whose left and top are
+// NEGATIVE -- the border sits outside the client area -- and reading those as unsigned
+// gives about four billion.
+function peek32s(a: array of char; at: int): int;
+var v: int;
+begin
+  v := peek32(a, at);
+  if v >= 2147483648 then return v - 4294967296;
+  return v;
+end;
+
+
+
+function peek64(a: array of char; at: int): int;
+begin
+  return peek32(a, at) + 4294967296 * peek32(a, at + 4);
+end;
+
+// A pointer into memory we do not own, read as an array. DRAWITEMSTRUCT arrives as an
+// address; view() turns it into something we can index without copying.
+function dipeek32(p: int; at: int): int;
+begin
+  return peek32(view(p, 64), at);
+end;
+
+function dipeek64(p: int; at: int): int;
+begin
+  return peek64(view(p, 64), at);
+end;
+
+// ---------------------------------------------------------------- the key grid
+
+function keyw: int;
+begin return (W - 2 * PAD - (COLS - 1) * GAPX) div COLS; end;
+
+function keyh: int;
+begin return (H - 46 - 2 * PAD - DISPH - GAPY - (ROWS - 1) * GAPY) div ROWS; end;
+
+function label(r: int; c: int): str;
+begin
+  if r = 0 then
+  begin
+    if c = 0 then return "%";
+    if c = 1 then return "CE";
+    if c = 2 then return "C";
+    return "<-";
+  end;
+  if r = 1 then
+  begin
+    if c = 0 then return "1/x";
+    if c = 1 then return "x2";
+    if c = 2 then return "sqr";
+    return "/";
+  end;
+  if r = 2 then
+  begin
+    if c = 0 then return "7";
+    if c = 1 then return "8";
+    if c = 2 then return "9";
+    return "*";
+  end;
+  if r = 3 then
+  begin
+    if c = 0 then return "4";
+    if c = 1 then return "5";
+    if c = 2 then return "6";
+    return "-";
+  end;
+  if r = 4 then
+  begin
+    if c = 0 then return "1";
+    if c = 1 then return "2";
+    if c = 2 then return "3";
+    return "+";
+  end;
+  if c = 0 then return "+/-";
+  if c = 1 then return "0";
+  if c = 2 then return ",";
+  return "=";
+end;
+
+// What pressing (row, col) means. Negative is a digit; -100 is the digit zero.
+function action(r: int; c: int): int;
+begin
+  if r = 0 then
+  begin
+    if c = 0 then return K_PCT;
+    if c = 1 then return K_CE;
+    if c = 2 then return K_CLEAR;
+    return K_BACK;
+  end;
+  if r = 1 then
+  begin
+    if c = 0 then return K_INV;
+    if c = 1 then return K_SQ;
+    if c = 2 then return K_SQRT;
+    return K_DIV;
+  end;
+  if r = 2 then
+  begin
+    if c = 0 then return 0 - 7;
+    if c = 1 then return 0 - 8;
+    if c = 2 then return 0 - 9;
+    return K_MUL;
+  end;
+  if r = 3 then
+  begin
+    if c = 0 then return 0 - 4;
+    if c = 1 then return 0 - 5;
+    if c = 2 then return 0 - 6;
+    return K_SUB;
+  end;
+  if r = 4 then
+  begin
+    if c = 0 then return 0 - 1;
+    if c = 1 then return 0 - 2;
+    if c = 2 then return 0 - 3;
+    return K_ADD;
+  end;
+  if c = 0 then return K_NEG;
+  if c = 1 then return 0 - 100;
+  if c = 2 then return 0;
+  return K_EQ;
+end;
+
+// Write <exe>.manifest beside the program, so Windows uses ComCtl32 version 6 and the
+// buttons are themed rather than the 1995 grey. It is written once and then left alone.
+procedure writemanifest;
+var path: array[0..511] of char;
+    body: array[0..1023] of char;
+    fd, k, m: int;
+begin
+  k := winapi("kernel32.dll", "GetModuleFileNameA", 0, addr(path[0]), 500);
+  if k <= 0 then return;
+  zput2(path, k, ".manifest");
+  m := 0;
+  m := put(body, m, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+  m := put(body, m, "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n");
+  m := put(body, m, "<assemblyIdentity type=\"win32\" name=\"Wantzel.Calculator\" version=\"1.0.0.0\"/>\n");
+  m := put(body, m, "<dependency><dependentAssembly><assemblyIdentity type=\"win32\"\n");
+  m := put(body, m, " name=\"Microsoft.Windows.Common-Controls\" version=\"6.0.0.0\"\n");
+  m := put(body, m, " processorArchitecture=\"*\" publicKeyToken=\"6595b64144ccf1df\" language=\"*\"/>\n");
+  m := put(body, m, "</dependentAssembly></dependency></assembly>\n");
+  // The Windows file API, not sysN: a syscall instruction is Linux's ABI and means
+  // nothing inside a PE. Calling one here jumped to address zero -- which showed up as a
+  // crash in whatever ran next, not here.
+  fd := winapi("kernel32.dll", "CreateFileA",
+               addr(path[0]), GENERIC_WRITE, 0, 0,
+               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+  if fd = INVALID_HANDLE then return;
+  if fd = 0 then return;
+  k := winapi("kernel32.dll", "WriteFile", fd, addr(body[0]), m, addr(nwrit[0]), 0);
+  k := winapi("kernel32.dll", "CloseHandle", fd);
+end;
+
+
+// Write a number into a buffer at `at`, return the new position.
+function putnum(a: array of char; at: int; v: int): int;
+var d: array[0..23] of char;
+    n, i: int;
+begin
+  if v = 0 then begin a[at] := chr(48); return at + 1; end;
+  n := 0;
+  while v > 0 do begin d[n] := chr(48 + (v mod 10)); v := v div 10; n := n + 1; end;
+  i := 0;
+  while i < n do begin a[at + i] := d[n - 1 - i]; i := i + 1; end;
+  return at + n;
+end;
+
+// ---------------------------------------------------------------- measuring ourselves
+//
+// This runs under Windows Sandbox, where there is no PowerShell script, no profiler and no
+// tool to install -- that is the point of measuring there: a clean machine with nothing
+// running. So the program times ITSELF and writes the answer into its own title bar, where
+// it can simply be read off.
+//
+// FILETIME counts 100-nanosecond units, so a millisecond is 10,000 of them.
+
+var ftbuf: array[0..15] of char;      // FILETIME, 8 bytes
+    pmc:   array[0..79] of char;      // PROCESS_MEMORY_COUNTERS, 72 bytes on x64
+    mbuf:  array[0..127] of char;      // the measurement as text
+    mpath: array[0..511] of char;
+    mwrit: array[0..7] of char;
+    uprof: array[0..15] of char;
+    tstart, tshown: int;
+
+function nowticks: int;
+var k, j, v: int;
+begin
+  k := winapi("kernel32.dll", "GetSystemTimeAsFileTime", addr(ftbuf[0]));
+  v := 0; j := 7;
+  while j >= 0 do begin v := v * 256 + ord(ftbuf[j]); j := j - 1; end;
+  return v;
+end;
+
+// Peak working set in kB, or 0 if psapi will not answer.
+function peakws: int;
+var k, j, v: int;
+begin
+  j := 0; while j < 80 do begin pmc[j] := chr(0); j := j + 1; end;
+  poke32(pmc, 0, 72);                                  // cb
+  k := winapi("psapi.dll", "GetProcessMemoryInfo",
+              winapi("kernel32.dll", "GetCurrentProcess"), addr(pmc[0]), 72);
+  if k = 0 then return 0;
+  v := peek64(pmc, 8);                                 // PeakWorkingSetSize
+  return v div 1024;
+end;
+
+// Put the measurement where it can be read without any tooling.
+procedure showtiming;
+var ms, kb, n: int;
+begin
+  ms := (tshown - tstart) div 10000;
+  kb := peakws;
+  n := 0;
+  n := put(title, n, "Wantzel Calculator - start ");
+  n := putnum(title, n, ms);
+  n := put(title, n, " ms");
+  if kb > 0 then
+  begin
+    n := put(title, n, ", peak ");
+    n := putnum(title, n, kb);
+    n := put(title, n, " kB");
+  end;
+  title[n] := chr(0);
+  n := winapi("user32.dll", "SetWindowTextA", hwnd, addr(title[0]));
+end;
+
+
+// Write the same measurement to a file, so it does not have to be transcribed.
+//
+// In Windows Sandbox the mapped folder is READ-ONLY, so writing next to the executable
+// fails. The Desktop of the sandbox user is writable and is visible in the sandbox window,
+// which makes it the one place a result can be dropped and then read by a human.
+procedure writetiming;
+var fd, k, n, ms, kb: int;
+begin
+  ms := (tshown - tstart) div 10000;
+  kb := peakws;
+  n := 0;
+  n := put(mbuf, n, "start ");
+  n := putnum(mbuf, n, ms);
+  n := put(mbuf, n, " ms, peak working set ");
+  n := putnum(mbuf, n, kb);
+  n := put(mbuf, n, " kB\r\n");
+
+  // try beside the executable first; in the sandbox that is read-only and simply fails
+  k := winapi("kernel32.dll", "GetModuleFileNameA", 0, addr(mpath[0]), 400);
+  if k > 0 then
+  begin
+    mpath[k] := chr(46); mpath[k + 1] := chr(116);       // ".txt"
+    mpath[k + 2] := chr(120); mpath[k + 3] := chr(116);
+    mpath[k + 4] := chr(0);
+    // FILE_APPEND_DATA (4) with OPEN_ALWAYS (4): each run adds a line rather than
+    // replacing the file, so three starts leave three measurements.
+    fd := winapi("kernel32.dll", "CreateFileA", addr(mpath[0]), 4, 0, 0, 4, 128, 0);
+    if (fd <> 0 - 1) and (fd <> 0) then
+    begin
+      k := winapi("kernel32.dll", "WriteFile", fd, addr(mbuf[0]), n, addr(mwrit[0]), 0);
+      k := winapi("kernel32.dll", "CloseHandle", fd);
+      return;
+    end;
+  end;
+
+  // otherwise the user profile, which is writable even when the mapped folder is not
+  k := winapi("kernel32.dll", "GetEnvironmentVariableA", addr(uprof[0]), addr(mpath[0]), 400);
+  if k <= 0 then return;
+  n := 0;
+  while n < 30 do begin mpath[k + n] := schar("\\Desktop\\wantzel-timing.txt", n); n := n + 1; end;
+  mpath[k + 28] := chr(0);
+  fd := winapi("kernel32.dll", "CreateFileA", addr(mpath[0]), 4, 0, 0, 4, 128, 0);
+  if (fd = 0 - 1) or (fd = 0) then return;
+  n := 0;
+  n := put(mbuf, n, "start ");
+  n := putnum(mbuf, n, ms);
+  n := put(mbuf, n, " ms, peak working set ");
+  n := putnum(mbuf, n, kb);
+  n := put(mbuf, n, " kB\r\n");
+  k := winapi("kernel32.dll", "WriteFile", fd, addr(mbuf[0]), n, addr(mwrit[0]), 0);
+  k := winapi("kernel32.dll", "CloseHandle", fd);
+end;
+
+// ---------------------------------------------------------------- the display
+
+procedure refresh;
+var k: int;
+begin
+  n := calc.text(dtext); dtext[n] := chr(0);
+  k := winapi("user32.dll", "SetWindowTextA", hdisp, addr(dtext[0]));
+  n := calc.expr(etext); etext[n] := chr(0);
+  k := winapi("user32.dll", "SetWindowTextA", hexpr, addr(etext[0]));
+end;
+
+// ---------------------------------------------------------------- painting a key
+//
+// The buttons are BS_OWNERDRAW, so Windows draws nothing and sends WM_DRAWITEM instead.
+// Everything a themed button would have given us for free -- the fill, the edge, the
+// pressed state, the text -- is ours to draw. That is the price of controlling the look.
+
+// A filled rounded rectangle in one colour, with a one-pixel edge in another.
+procedure card(hdc: int; x: int; y: int; w: int; h: int; fill: int; edge: int);
+var b, pn, ob, op, k: int;
+begin
+  b  := winapi("gdi32.dll", "CreateSolidBrush", fill);
+  pn := winapi("gdi32.dll", "CreatePen", 0, 1, edge);
+  ob := winapi("gdi32.dll", "SelectObject", hdc, b);
+  op := winapi("gdi32.dll", "SelectObject", hdc, pn);
+  // RoundRect takes the corner diameter, not the radius. 10 reads as the same softness as
+  // the 5px radius the house style uses on the web.
+  k := winapi("gdi32.dll", "RoundRect", hdc, x, y, x + w, y + h, 10, 10);
+  k := winapi("gdi32.dll", "SelectObject", hdc, ob);
+  k := winapi("gdi32.dll", "SelectObject", hdc, op);
+  k := winapi("gdi32.dll", "DeleteObject", b);
+  k := winapi("gdi32.dll", "DeleteObject", pn);
+end;
+
+// Centred text in a rect, anti-aliased because the font asked for CLEARTYPE_QUALITY.
+procedure centred(hdc: int; x: int; y: int; w: int; h: int; s: str; colour: int; f: int);
+var k, of_: int;
+begin
+  poke32(rc, 0, x); poke32(rc, 4, y);
+  poke32(rc, 8, x + w); poke32(rc, 12, y + h);
+  of_ := winapi("gdi32.dll", "SelectObject", hdc, f);
+  k := winapi("gdi32.dll", "SetBkMode", hdc, TRANSPARENT);
+  k := winapi("gdi32.dll", "SetTextColor", hdc, colour);
+  zput(tbuf, s);
+  k := winapi("user32.dll", "DrawTextA", hdc, addr(tbuf[0]), 0 - 1, addr(rc[0]),
+              bor(bor(DT_CENTER, DT_VCENTER), DT_SINGLELINE));
+  k := winapi("gdi32.dll", "SelectObject", hdc, of_);
+end;
+
+// Which of the three surfaces a key sits on. The house style gives the meaning: a digit is
+// a raised card, an operator a soft accent field, and the result carries the accent itself.
+function keyfill(r: int; c: int; pressed: int; hot: int): int;
+begin
+  if (r = 5) and (c = 3) then
+  begin
+    if pressed <> 0 then return 1063564;         // a pressed accent, darkened
+    return C_ACCENT;
+  end;
+  if c = 3 then
+  begin
+    if pressed <> 0 then return C_RULE;
+    if hot <> 0 then return 15132390;            // e6e4f0-ish: the soft field, lifted
+    return C_SOFT;
+  end;
+  if r = 0 then
+  begin
+    if pressed <> 0 then return C_RULE;
+    if hot <> 0 then return C_HOVER;
+    return C_BG;
+  end;
+  if pressed <> 0 then return C_PRESS;
+  if hot <> 0 then return C_HOVER;
+  return C_CARD;
+end;
+
+function keyink(r: int; c: int): int;
+begin
+  if (r = 5) and (c = 3) then return 16777215;   // white on the accent
+  if r = 0 then return C_MUTED;                  // the clear row is secondary
+  return C_FG;
+end;
+
+// Paint one key. The DRAWITEMSTRUCT tells us which, in what state, and where.
+procedure drawkey(dis: int);
+var id, st, hdc, x, y, w, h, a, rr, cc, pressed, hot: int;
+begin
+  id  := dipeek32(dis, DI_CTLID);
+  st  := dipeek32(dis, DI_STATE);
+  hdc := dipeek64(dis, DI_HDC);
+  x := dipeek32(dis, DI_RECT);
+  y := dipeek32(dis, DI_RECT + 4);
+  w := dipeek32(dis, DI_RECT + 8) - x;
+  h := dipeek32(dis, DI_RECT + 12) - y;
+
+  a := id - ID_BASE;
+  rr := a div COLS; cc := a mod COLS;
+  pressed := band(st, ODS_SELECTED);
+  hot := 0;
+  if hover = id then hot := 1;
+
+  // The micro-effect: a pressed key loses one pixel on every side, so it reads as going
+  // INTO the surface rather than merely changing colour.
+  if pressed <> 0 then
+  begin
+    x := x + 1; y := y + 1; w := w - 2; h := h - 2;
+  end;
+
+  card(hdc, x, y, w, h, keyfill(rr, cc, pressed, hot), C_RULE);
+  centred(hdc, x, y, w, h, label(rr, cc), keyink(rr, cc), fkey);
+end;
+
+// Which control id is at a window point, or -1. The grid is regular, so this is
+// arithmetic rather than a hit-test loop.
+function keyat(px: int; py: int): int;
+var gx, gy, cc, rr: int;
+begin
+  gx := px - PAD;
+  gy := py - PAD - DISPH - GAPY;
+  if (gx < 0) or (gy < 0) then return 0 - 1;
+  cc := gx div (keyw + GAPX);
+  rr := gy div (keyh + GAPY);
+  if (cc >= COLS) or (rr >= ROWS) then return 0 - 1;
+  // inside the gap between two keys counts as no key
+  if gx - cc * (keyw + GAPX) >= keyw then return 0 - 1;
+  if gy - rr * (keyh + GAPY) >= keyh then return 0 - 1;
+  return ID_BASE + rr * COLS + cc;
+end;
+
+// Ask one key to redraw itself. -1 means there is nothing to redraw, which happens
+// whenever the pointer sits in a gap or outside the grid.
+procedure repaint(id: int);
+var h, k: int;
+begin
+  if id < ID_BASE then return;
+  h := winapi("user32.dll", "GetDlgItem", hwnd, id);
+  if h = 0 then return;
+  k := winapi("user32.dll", "InvalidateRect", h, 0, 0);
+end;
+
+// ---------------------------------------------------------------- the window procedure
+//
+// THIS is what needed winproc(). Windows calls this routine itself, whenever something
+// happens to the window -- there is no loop that can see a button click, because a control
+// SENDS its notification straight here rather than posting it to the queue.
+
+function wndproc(hw: int; m: int; wp: int; lp: int): int;
+var id, a, k, hit: int;
+begin
+  // Windows asks us to paint a key. lp is the DRAWITEMSTRUCT.
+  if m = WM_DRAWITEM then
+  begin
+    drawkey(lp);
+    return 1;
+  end;
+  // Hover. Windows does not send "the mouse left this button" unless asked, so every move
+  // re-arms a TRACKMOUSEEVENT; without it a key stays lit after the pointer has gone.
+  if m = WM_MOUSEMOVE then
+  begin
+    hit := keyat(lp mod 65536, lp div 65536);
+    if hit <> hover then
+    begin
+      repaint(hover); hover := hit; repaint(hover);
+    end;
+    i := 0; while i < 24 do begin tme[i] := chr(0); i := i + 1; end;
+    poke32(tme, 0, 24); poke32(tme, 4, 2);          // cbSize, TME_LEAVE
+    poke64(tme, 8, hw);
+    k := winapi("user32.dll", "TrackMouseEvent", addr(tme[0]));
+    return 0;
+  end;
+  if m = WM_MOUSELEAVE then
+  begin
+    repaint(hover); hover := 0 - 1;
+    return 0;
+  end;
+  // The window's own surface: paper, with the display sitting on it as a card. A system
+  // brush would follow the theme instead of the house style, so we paint it ourselves.
+  if m = WM_ERASEBKGND then
+  begin
+    k := winapi("user32.dll", "GetClientRect", hw, addr(rc[0]));
+    a := winapi("gdi32.dll", "CreateSolidBrush", C_BG);
+    k := winapi("user32.dll", "FillRect", wp, addr(rc[0]), a);
+    k := winapi("gdi32.dll", "DeleteObject", a);
+    card(wp, PAD, PAD, W - 2 * PAD - 16, DISPH, C_CARD, C_RULE);
+    return 1;
+  end;
+  // The two labels sit ON that card, so they must not paint a grey box behind themselves.
+  if m = WM_CTLCOLORSTATIC then
+  begin
+    k := winapi("gdi32.dll", "SetBkMode", wp, TRANSPARENT);
+    if lp = hexpr then k := winapi("gdi32.dll", "SetTextColor", wp, C_MUTED)
+    else k := winapi("gdi32.dll", "SetTextColor", wp, C_FG);
+    if brush = 0 then brush := winapi("gdi32.dll", "CreateSolidBrush", C_CARD);
+    return brush;
+  end;
+  if m = WM_COMMAND then
+  begin
+    id := wp mod 65536;                    // the low word is the control id
+    if id >= ID_BASE then
+    begin
+      a := id - ID_BASE;
+      r := a div COLS; c := a mod COLS;
+      a := action(r, c);
+      if a = 0 - 100 then calc.digit(0)
+      else if a < 0 then calc.digit(0 - a)
+      else if a > 0 then calc.key(a);
+      refresh;
+    end;
+    return 0;
+  end;
+  if m = WM_DESTROY then
+  begin
+    running := 0;
+    id := winapi("user32.dll", "PostQuitMessage", 0);
+    return 0;
+  end;
+  // everything else is Windows' own business
+  return winapi("user32.dll", "DefWindowProcA", hw, m, wp, lp);
+end;
+
+// ---------------------------------------------------------------- building the window
+
+// Create a Segoe UI face at the given pixel height. CreateFontA takes fourteen arguments,
+// which is exactly the kind of call that used to be impossible here.
+function makefont(px: int; weight: int): int;
+begin
+  return winapi("gdi32.dll", "CreateFontA",
+                0 - px, 0, 0, 0, weight, 0, 0, 0,
+                ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                addr(segoe[0]));
+end;
+
+procedure setfont(h: int; f: int);
+var k: int;
+begin
+  k := winapi("user32.dll", "SendMessageA", h, WM_SETFONT, f, 1);
+end;
+
+procedure build;
+var x, y, id: int;
+begin
+  // the expression line and the display, as static labels
+  zput(cname, "STATIC");
+  hexpr := winapi("user32.dll", "CreateWindowExA",
+                  0, addr(cname[0]), 0,
+                  bor(WS_CHILD, WS_VISIBLE) + 2,          // SS_RIGHT
+                  PAD + 14, PAD + 14, W - 2 * PAD - 16 - 28, 22,
+                  hwnd, 0, hinst, 0);
+  setfont(hexpr, fsmall);
+  hdisp := winapi("user32.dll", "CreateWindowExA",
+                  0, addr(cname[0]), 0,
+                  bor(WS_CHILD, WS_VISIBLE) + 2,
+                  PAD + 14, PAD + 42, W - 2 * PAD - 16 - 28, 46,
+                  hwnd, 0, hinst, 0);
+  setfont(hdisp, fbig);
+
+  // and a button per key -- Windows draws these, which is the whole difference with X11
+  zput(bname, "BUTTON");
+  r := 0;
+  while r < ROWS do
+  begin
+    c := 0;
+    while c < COLS do
+    begin
+      zput(cname, label(r, c));
+      x := PAD + c * (keyw + GAPX);
+      y := PAD + DISPH + GAPY + r * (keyh + GAPY);
+      id := ID_BASE + r * COLS + c;
+      i := winapi("user32.dll", "CreateWindowExA",
+                  0, addr(bname[0]), addr(cname[0]),
+                  bor(bor(WS_CHILD, WS_VISIBLE), BS_OWNERDRAW),
+                  x, y, keyw, keyh,
+                  hwnd, id, hinst, 0);
+      setfont(i, fkey);
+      c := c + 1;
+    end;
+    r := r + 1;
+  end;
+end;
+
+begin
+  tstart := nowticks;
+  calc.reset;
+  hinst := winapi("kernel32.dll", "GetModuleHandleA", 0);
+
+  // The manifest that asks for themed controls. Windows reads it from beside the
+  // executable, so writing it once on startup is enough -- embedding it as a PE resource
+  // would be tidier and needs a resource section the writer does not have yet.
+  writemanifest;
+
+  zput(segoe, "Segoe UI");
+  fbig   := makefont(34, FW_SEMIBOLD);      // the number
+  fsmall := makefont(14, FW_NORMAL);        // the expression above it
+  fkey   := makefont(17, FW_NORMAL);        // the keys
+
+  // WNDCLASSEXA: 80 bytes on x64, and lpfnWndProc sits at offset 8 -- not 4, because a
+  // pointer aligns to eight. Getting that wrong gives a class the system simply refuses.
+  i := 0; while i < 128 do begin wc[i] := chr(0); i := i + 1; end;
+  zput(cname, "WantzelCalc");
+  poke32(wc, 0, 80);                                   // cbSize
+  poke32(wc, 4, 3);                                    // style: CS_HREDRAW|CS_VREDRAW
+  poke64(wc, 8, winproc(wndproc));                     // lpfnWndProc  <- the callback
+  poke64(wc, 24, hinst);                               // hInstance
+  poke64(wc, 48, 16);                                  // hbrBackground: COLOR_BTNFACE+1
+  poke64(wc, 64, addr(cname[0]));                      // lpszClassName
+
+  atom := winapi("user32.dll", "RegisterClassExA", addr(wc[0]));
+  if atom = 0 then
+  begin
+    io.puts(STDERR, "calcwin: the window class was refused\n");
+    halt(1);
+  end;
+
+  zput(title, "Wantzel Calculator - Win32");
+  // CreateWindowEx takes the OUTSIDE size: the client area plus border and title bar. Ask
+  // for W x H directly and the window is too small -- and by an amount that differs between
+  // Windows versions and between Windows and Wine, which is why this survived Wine and was
+  // visible at once on Windows 11. AdjustWindowRect converts the client rectangle we want
+  // into the outside rectangle to ask for.
+  i := 0; while i < 16 do begin wrc[i] := chr(0); i := i + 1; end;
+  poke32(wrc, 8, W); poke32(wrc, 12, H);
+  i := winapi("user32.dll", "AdjustWindowRect", addr(wrc[0]), WS_OVERLAPPEDWINDOW, 0);
+  hwnd := winapi("user32.dll", "CreateWindowExA",
+                 0, addr(cname[0]), addr(title[0]),
+                 WS_OVERLAPPEDWINDOW,
+                 120, 80,
+                 peek32s(wrc, 8) - peek32s(wrc, 0),
+                 peek32s(wrc, 12) - peek32s(wrc, 4),
+                 0, 0, hinst, 0);
+  if hwnd = 0 then
+  begin
+    io.puts(STDERR, "calcwin: no window\n");
+    halt(1);
+  end;
+
+  build;
+  refresh;
+  i := winapi("user32.dll", "ShowWindow", hwnd, SW_SHOW);
+
+  // The window is on screen now, so this is the honest moment to stop the clock.
+  tshown := nowticks;
+  zput(uprof, "USERPROFILE");
+  showtiming;
+  writetiming;
+
+  // The loop. It does not see the clicks -- those go straight to wndproc above. What it
+  // does is keep the window alive and let Windows deliver everything else.
+  running := 1;
+  while running <> 0 do
+  begin
+    n := winapi("user32.dll", "GetMessageA", addr(msg[0]), 0, 0, 0);
+    if n = 0 then running := 0
+    else
+    begin
+      i := winapi("user32.dll", "TranslateMessage", addr(msg[0]));
+      i := winapi("user32.dll", "DispatchMessageA", addr(msg[0]));
+    end;
+  end;
+end.

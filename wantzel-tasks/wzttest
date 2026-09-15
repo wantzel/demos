@@ -3,6 +3,7 @@
 #
 #   ./wzttest              all of them
 #   ./wzttest store        only those whose name contains "store"
+#   ./wzttest claim stats  several, each a name filter of its own
 #
 # tests/_*.wz are shared includes, not tests, and are skipped.
 #
@@ -20,7 +21,7 @@ fi
 [ -x "$WANTZEL" ] || { echo "wzttest: no wantzel compiler found (set WANTZEL)" >&2; exit 2; }
 
 # See wztrun: the version these tests were written against.
-WANTZEL_TESTED=0.1.2
+WANTZEL_TESTED=0.2.1
 have=$("$WANTZEL" --version 2>/dev/null | awk '{print $2}')
 if [ -n "$have" ] && [ "$have" != "$WANTZEL_TESTED" ]; then
   echo "note: tests written against Wantzel $WANTZEL_TESTED, you have $have" >&2
@@ -34,7 +35,16 @@ for t in "$here"/tests/*.wz; do
   # A leading underscore means "included by tests, not a test itself" -- _helpers.wz has
   # no `program` line, so compiling it as a test would report a failure that is not one.
   case "$name" in _*) continue ;; esac
-  case "$1" in "") ;; *) case "$name" in *"$1"*) ;; *) continue ;; esac ;; esac
+  # Every argument is a name filter, and a test runs when it matches ANY of them. One
+  # argument was enough while a person typed them; a tool that asks for the tests of one
+  # tool asking for the tests of one change needs several.
+  if [ $# -gt 0 ]; then
+    hit=0
+    for want in "$@"; do
+      case "$name" in *"$want"*) hit=1 ;; esac
+    done
+    [ "$hit" -eq 1 ] || continue
+  fi
 
   if ! out=$("$WANTZEL" "$t" "$tmp/$name" 2>&1); then
     printf '  FAIL  %-28s did not compile\n' "$name"
@@ -57,3 +67,15 @@ done
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ] || { echo "failed:$failed"; exit 1; }
+
+# A FILTER THAT MATCHES NOTHING IS A FAILURE, not a pass.
+#
+# "0 passed, 0 failed" and exit 0 is indistinguishable from a suite where everything
+# went well, and that is how a caller asking for tests that do not exist gets told they
+# are green. Found while teaching a tool to run a demo's tests: it
+# handed over paths where this expects name filters, nothing matched, and the answer was
+# a cheerful zero.
+if [ "$pass" -eq 0 ] && [ $# -gt 0 ]; then
+  echo "no test matched: $*" >&2
+  exit 1
+fi

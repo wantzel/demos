@@ -1,5 +1,4 @@
 // get_ticket and delete_ticket: reading and removing by id, and what happens twice.
-program test_get_delete;
 
 include "json.wz";
 include "mcphttp.wz";

@@ -1,0 +1,40 @@
+#!/bin/sh
+# The calculator's tests. The arithmetic runs headless; the window does not.
+#
+# That split is the whole point of the file layout: calc.wz holds the arithmetic and knows
+# nothing about a screen, so it can be tested like any other program. What a window looks
+# like still needs a pair of eyes.
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+WZ=${WANTZEL:-$here/../../wantzel/bin/wantzel}
+[ -x "$WZ" ] || { echo "no wantzel compiler (set WANTZEL)" >&2; exit 2; }
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+pass=0; fail=0
+for t in "$here"/tests/*.wz; do
+  n=$(basename "$t" .wz)
+  if ! "$WZ" "$t" "$T/$n" >"$T/$n.err" 2>&1; then
+    echo "  FAIL  $n (does not compile)"; sed -n 1,3p "$T/$n.err"; fail=$((fail+1)); continue
+  fi
+  if "$T/$n" >"$T/$n.out" 2>&1; then
+    echo "  ok    $n"; pass=$((pass+1))
+  else
+    echo "  FAIL  $n"; sed -n 1,20p "$T/$n.out"; fail=$((fail+1))
+  fi
+done
+# the GUI must at least build, on both targets it supports
+# Every implementation must build, on the target it is written for. They are separate
+# programs with their own copies, so one breaking says nothing about the others -- which is
+# exactly why each is checked.
+for impl in x11-protocol x11-separated; do
+  "$WZ" "$here/src/$impl/main.wz" "$T/$impl" >/dev/null 2>&1 \
+    && { echo "  ok    $impl builds"; pass=$((pass+1)); } \
+    || { echo "  FAIL  $impl does not build"; fail=$((fail+1)); }
+done
+for impl in win32-controls win32-owner-drawn win32-separated; do
+  "$WZ" "$here/src/$impl/main.wz" "$T/$impl.exe" --target=windows >/dev/null 2>&1 \
+    && { echo "  ok    $impl builds"; pass=$((pass+1)); } \
+    || { echo "  FAIL  $impl does not build"; fail=$((fail+1)); }
+done
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

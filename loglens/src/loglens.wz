@@ -1,0 +1,188 @@
+// loglens.wz -- search a log file of any size with a binary of half a megabyte.
+//
+//   loglens <pattern> <file>            print every matching line
+//   loglens -c <pattern> <file>         count them instead
+//   loglens -s <status> <file>          lines with that HTTP status
+//
+// WHY THIS IS A DEMO. The file is mapped, not read: the kernel pages in what the scan
+// touches and drops it again, so memory stays FLAT whatever the file size -- one gigabyte
+// and fifty gigabytes cost the same resident memory. There is no buffer to size, no
+// streaming loop to get wrong, and no allocation at all. That is mmap plus `view`,
+// which is the whole mechanism, and it is about thirty lines.
+//
+// The search itself is deliberately plain: scan for the first byte of the pattern, then
+// compare. No index, no Boyer-Moore. The point of the measurement is what the LANGUAGE and
+// the operating system give you for free, not how clever a matcher can be -- and the
+// numbers say that is already enough to walk gigabytes.
+
+include "io.wz";
+include "fs.wz";
+
+const
+  MAXPAT = 256;
+
+var
+  path: array[0..4095] of char;
+  pat:  array[0..MAXPAT - 1] of char;
+  patn: int;
+  base, size: int;              // the mapping and its length
+  fd, i, n: int;
+  countonly, bystatus: bool;
+  hits, shown: int;
+
+procedure usage;
+begin
+  io.puts(STDERR, "usage: loglens [-c] <pattern> <file>\n");
+  io.puts(STDERR, "       loglens -s <status> <file>\n");
+  halt(2);
+end;
+
+// argument k into b, NUL-terminated; returns its length
+function argz(b: array of char; k: int): int;
+var i: int;
+begin
+  i := 0;
+  while argch(k, i) <> chr(0) do
+  begin
+    if i >= len(b) - 1 then io.fatal("loglens: that argument is too long");
+    b[i] := argch(k, i);
+    i := i + 1;
+  end;
+  b[i] := chr(0);
+  return i;
+end;
+
+// Map the whole file read-only. Nothing is copied: the pages arrive when they are
+// touched, so a fifty-gigabyte file costs the same resident memory as a one-megabyte one.
+function mapfile: bool;
+begin
+  if not fs.stat(addr(path[0])) then
+  begin
+    io.puts(STDERR, "loglens: cannot stat that file\n");
+    return false;
+  end;
+  size := fs.size;
+  if size <= 0 then
+  begin
+    io.puts(STDERR, "loglens: that file is empty\n");
+    return false;
+  end;
+  fd := sys3(SYS.open, addr(path[0]), O_RDONLY, 0);
+  if fd < 0 then
+  begin
+    io.puts(STDERR, "loglens: cannot open that file\n");
+    return false;
+  end;
+  base := sys6(SYS.mmap, 0, size, PROT_READ, MAP_SHARED, fd, 0);
+  sys1(SYS.close, fd);              // the mapping keeps its own reference
+  if base < 0 then
+  begin
+    io.puts(STDERR, "loglens: cannot map that file\n");
+    return false;
+  end;
+  return true;
+end;
+
+// Does the pattern sit at position at, in the mapped bytes b?
+function matchat(b: array of char; at: int): bool;
+var i: int;
+begin
+  if at + patn > size then return false;
+  i := 0;
+  while i < patn do
+  begin
+    if b[at + i] <> pat[i] then return false;
+    i := i + 1;
+  end;
+  return true;
+end;
+
+// the start of the line that position `at` is in
+function linestart(b: array of char; at: int): int;
+begin
+  while (at > 0) and (b[at - 1] <> chr(10)) do at := at - 1;
+  return at;
+end;
+
+// the position just past the end of that line
+function lineend(b: array of char; at: int): int;
+begin
+  while (at < size) and (b[at] <> chr(10)) do at := at + 1;
+  return at;
+end;
+
+// Walk the mapping and report every line that holds the pattern.
+//
+// `scan` is a builtin that finds one byte, which is what makes this fast without any
+// cleverness: it looks for the first byte of the pattern and only then compares the rest.
+procedure search(b: array of char);
+var at, s, e: int;
+begin
+  at := 0;
+  while at < size do
+  begin
+    at := scan(b, at, size, pat[0]);
+    if at >= size then return;
+    if matchat(b, at) then
+    begin
+      s := linestart(b, at);
+      e := lineend(b, at);
+      hits := hits + 1;
+      if not countonly then
+      begin
+        io.out(STDOUT, base + s, e - s);
+        io.puts(STDOUT, "\n");
+      end;
+      at := e + 1;                 // one hit per line, then on to the next
+    end
+    else at := at + 1;
+  end;
+end;
+
+begin
+  if argc() < 3 then usage;
+
+  countonly := false;
+  bystatus := false;
+  i := 1;
+  n := argz(pat, i);
+  if (n = 2) and (pat[0] = '-') and (pat[1] = 'c') then
+  begin
+    countonly := true;
+    i := i + 1;
+  end
+  else if (n = 2) and (pat[0] = '-') and (pat[1] = 's') then
+  begin
+    bystatus := true;
+    countonly := true;          // -s reports a count; printing the lines too is noise
+    i := i + 1;
+  end;
+  if argc() < i + 2 then usage;
+
+  patn := argz(pat, i);
+  if patn = 0 then usage;
+  // A STATUS IS NOT A SUBSTRING. Searching for "500" would also match a response size of
+  // 500 bytes and an address containing 500; the status sits between the closing quote of
+  // the request and a space, so that is what we look for.
+  if bystatus then
+  begin
+    for n := patn downto 1 do pat[n + 1] := pat[n - 1];
+    pat[0] := '"'; pat[1] := ' ';
+    patn := patn + 2;
+    pat[patn] := ' ';
+    patn := patn + 1;
+  end;
+
+  n := argz(path, i + 1);
+  if not mapfile then halt(1);
+
+  hits := 0;
+  search(view(base, size));
+
+  if countonly or bystatus then
+  begin
+    io.putn(STDOUT, hits);
+    io.puts(STDOUT, "\n");
+  end;
+  sys2(SYS.munmap, base, size);
+end.

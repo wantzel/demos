@@ -1,0 +1,61 @@
+#!/bin/sh
+# wzlrun -- build loglens and its generator, and run a measurement.
+#
+#   ./wzlrun --build              build only
+#   ./wzlrun --ladder <dir>       the measurement ladder, 1 MB up to 10 GB, in <dir>
+#   ./wzlrun --ladder <dir> 50    include the 50 GB rung (needs ~54 GB of free disk)
+#
+# THE LOGS NEVER GO INTO THIS REPOSITORY. <dir> is where the generated files land and it
+# has to be somewhere else: fifty gigabytes in git cannot be taken out again, and what is
+# once in the history stays there. The generator refuses no path, so this is the place
+# where care is taken.
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [ -z "$WANTZEL" ]; then
+  for c in "$here/../../wantzel/bin/wantzel" "$here/../wantzel/bin/wantzel" "$(command -v wantzel || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then WANTZEL="$c"; break; fi
+  done
+fi
+[ -x "$WANTZEL" ] || { echo "wzlrun: no wantzel compiler found (set WANTZEL)" >&2; exit 2; }
+
+mkdir -p "$here/bin"
+"$WANTZEL" "$here/src/loglens.wz"   "$here/bin/loglens"
+"$WANTZEL" "$here/tools/genlog.wz"  "$here/bin/genlog"
+echo "built: bin/loglens ($(stat -c %s "$here/bin/loglens") bytes), bin/genlog"
+
+[ "$1" = "--build" ] && exit 0
+
+if [ "$1" = "--ladder" ]; then
+  dir=$2
+  [ -n "$dir" ] || { echo "wzlrun: --ladder needs a directory OUTSIDE this repository" >&2; exit 2; }
+  case "$(cd "$dir" 2>/dev/null && pwd)/" in
+    "$here"/*) echo "wzlrun: refusing to write logs inside the repository" >&2; exit 2 ;;
+  esac
+  mkdir -p "$dir"
+
+  rung() {   # <bytes> <label>
+    f="$dir/rung.log"
+    rm -f "$f"
+    g0=$(date +%s%N); "$here/bin/genlog" "$1" "$f" >/dev/null; g1=$(date +%s%N)
+    real=$(stat -c %s "$f")
+    s0=$(date +%s%N); hits=$("$here/bin/loglens" -s 500 "$f"); s1=$(date +%s%N)
+    gen=$(( (g1-g0)/1000000 )); sea=$(( (s1-s0)/1000000 ))
+    [ "$sea" -lt 1 ] && sea=1
+    printf '%-6s %14s %9s %9s %10s %10s\n' "$2" "$real" "${gen}ms" "${sea}ms" \
+           "$(( real / 1048576 * 1000 / sea ))MB/s" "$hits"
+    rm -f "$f"          # each rung cleans up after itself: the ladder is 61 GB otherwise
+  }
+
+  printf '%-6s %14s %9s %9s %10s %10s\n' size bytes generate search rate 'status 500'
+  rung 1048576      1MB
+  rung 10485760     10MB
+  rung 104857600    100MB
+  rung 1073741824   1GB
+  rung 10737418240  10GB
+  [ "$3" = "50" ] && rung 53687091200 50GB
+  exit 0
+fi
+
+echo "wzlrun: nothing to do; try --build or --ladder <dir>" >&2
+exit 2

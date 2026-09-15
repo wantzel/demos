@@ -1,6 +1,5 @@
 // ticket_stats: counts per status, total is their sum, p0 counts only OPEN P0 tickets,
 // and both area and milestone narrow the count the same way list_tickets does.
-program test_stats;
 
 include "json.wz";
 include "mcphttp.wz";

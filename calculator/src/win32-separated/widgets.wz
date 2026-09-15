@@ -1,0 +1,210 @@
+// widgets.wz -- keys, a grid, and what gets painted.
+//
+// The layer between win32.wz (which knows the platform) and main.wz (which knows what a
+// calculator is). Nothing here names a DLL or fills a structure; nothing here knows what a
+// key means either.
+
+// ---------------------------------------------------------------- geometry
+
+function win.keyw: int;
+begin return (win.w - 2 * win.pad - (win.cols - 1) * win.gap) div win.cols; end;
+
+function win.keyh: int;
+begin
+  return (win.h - 46 - 2 * win.pad - win.disph - win.gap
+          - (win.rows - 1) * win.gap) div win.rows;
+end;
+
+function win.keyx(c: int): int;
+begin return win.pad + c * (win.keyw + win.gap); end;
+
+function win.keyy(r: int): int;
+begin return win.pad + win.disph + win.gap + r * (win.keyh + win.gap); end;
+
+// Which key is at a point, or -1. The grid is regular, so this is arithmetic.
+function win.at(px: int; py: int): int;
+var gx, gy, cc, rr, k: int;
+begin
+  gx := px - win.pad;
+  gy := py - win.pad - win.disph - win.gap;
+  if (gx < 0) or (gy < 0) then return 0 - 1;
+  cc := gx div (win.keyw + win.gap);
+  rr := gy div (win.keyh + win.gap);
+  if (cc >= win.cols) or (rr >= win.rows) then return 0 - 1;
+  if gx - cc * (win.keyw + win.gap) >= win.keyw then return 0 - 1;
+  if gy - rr * (win.keyh + win.gap) >= win.keyh then return 0 - 1;
+  k := 0;
+  while k < win.nkeys do
+  begin
+    if (win.keys[k].row = rr) and (win.keys[k].col = cc) then return WK.IDBASE + k;
+    k := k + 1;
+  end;
+  return 0 - 1;
+end;
+
+// ---------------------------------------------------------------- painting
+
+procedure win.card(hdc: int; x: int; y: int; w: int; h: int; fill: int; edge: int);
+var b, pn, ob, op, k: int;
+begin
+  b  := winapi("gdi32.dll", "CreateSolidBrush", fill);
+  pn := winapi("gdi32.dll", "CreatePen", 0, 1, edge);
+  ob := winapi("gdi32.dll", "SelectObject", hdc, b);
+  op := winapi("gdi32.dll", "SelectObject", hdc, pn);
+  k := winapi("gdi32.dll", "RoundRect", hdc, x, y, x + w, y + h, 10, 10);
+  k := winapi("gdi32.dll", "SelectObject", hdc, ob);
+  k := winapi("gdi32.dll", "SelectObject", hdc, op);
+  k := winapi("gdi32.dll", "DeleteObject", b);
+  k := winapi("gdi32.dll", "DeleteObject", pn);
+end;
+
+procedure win.centred(hdc: int; x: int; y: int; w: int; h: int;
+                      a: array of char; colour: int; f: int);
+var k, of_: int;
+begin
+  win.poke32(win.rc, 0, x); win.poke32(win.rc, 4, y);
+  win.poke32(win.rc, 8, x + w); win.poke32(win.rc, 12, y + h);
+  of_ := winapi("gdi32.dll", "SelectObject", hdc, f);
+  k := winapi("gdi32.dll", "SetBkMode", hdc, WK.TRANSPARENT);
+  k := winapi("gdi32.dll", "SetTextColor", hdc, colour);
+  k := winapi("user32.dll", "DrawTextA", hdc, addr(a[0]), 0 - 1, addr(win.rc[0]),
+              bor(bor(WK.DT_CENTER, WK.DT_VCENTER), WK.DT_SINGLE));
+  k := winapi("gdi32.dll", "SelectObject", hdc, of_);
+end;
+
+procedure win.drawkey(dis: int);
+var id, st, hdc, x, y, w, h, k, pressed: int;
+begin
+  id  := win.dipeek32(dis, WK.DI_CTLID);
+  st  := win.dipeek32(dis, WK.DI_STATE);
+  hdc := win.dipeek64(dis, WK.DI_HDC);
+  x := win.dipeek32(dis, WK.DI_RECT);
+  y := win.dipeek32(dis, WK.DI_RECT + 4);
+  w := win.dipeek32(dis, WK.DI_RECT + 8) - x;
+  h := win.dipeek32(dis, WK.DI_RECT + 12) - y;
+
+  k := id - WK.IDBASE;
+  if (k < 0) or (k >= win.nkeys) then return;
+  pressed := band(st, WK.SELECTED);
+
+  // a pressed key loses a pixel on every side, so it reads as going INTO the surface
+  if pressed <> 0 then
+  begin
+    x := x + 1; y := y + 1; w := w - 2; h := h - 2;
+  end;
+
+  if pressed <> 0 then
+    win.card(hdc, x, y, w, h, WK.PRESS, WK.RULE)
+  else if win.hover = id then
+    win.card(hdc, x, y, w, h, WK.HOVER, WK.RULE)
+  else
+    win.card(hdc, x, y, w, h, win.keys[k].fill, WK.RULE);
+
+  win.centred(hdc, x, y, w, h, win.keys[k].label, win.keys[k].ink, win.fkey);
+end;
+
+procedure win.repaint(id: int);
+var h, k: int;
+begin
+  if id < WK.IDBASE then return;
+  h := winapi("user32.dll", "GetDlgItem", win.hwnd, id);
+  if h = 0 then return;
+  k := winapi("user32.dll", "InvalidateRect", h, 0, 0);
+end;
+
+// ---------------------------------------------------------------- the callback
+//
+// The application never sees this. It hands win.run a procedure that takes a key index,
+// and everything below -- the window procedure, the four-register convention, the
+// difference between a sent and a posted message -- stays here.
+
+var win.onkey: int;                   // index of the application's handler
+
+procedure win.dispatch(k: int); forward;
+
+function win.proc(hw: int; m: int; wp: int; lp: int): int;
+var id, k, hit: int;
+begin
+  if m = WK.DRAWITEM then begin win.drawkey(lp); return 1; end;
+
+  if m = WK.ERASEBKGND then
+  begin
+    k := winapi("user32.dll", "GetClientRect", hw, addr(win.rc[0]));
+    id := winapi("gdi32.dll", "CreateSolidBrush", WK.PAPER);
+    k := winapi("user32.dll", "FillRect", wp, addr(win.rc[0]), id);
+    k := winapi("gdi32.dll", "DeleteObject", id);
+    win.card(wp, win.pad, win.pad, win.w - 2 * win.pad - 16, win.disph,
+             WK.CARD, WK.RULE);
+    return 1;
+  end;
+
+  if m = WK.CTLCOLORSTATIC then
+  begin
+    k := winapi("gdi32.dll", "SetBkMode", wp, WK.TRANSPARENT);
+    if lp = win.hexpr then k := winapi("gdi32.dll", "SetTextColor", wp, WK.MUTED)
+    else k := winapi("gdi32.dll", "SetTextColor", wp, WK.INK);
+    if win.brush = 0 then
+      win.brush := winapi("gdi32.dll", "CreateSolidBrush", WK.CARD);
+    return win.brush;
+  end;
+
+  // Windows does not say "the mouse left" unless asked, so every move re-arms it.
+  if m = WK.MOUSEMOVE then
+  begin
+    hit := win.at(lp mod 65536, lp div 65536);
+    if hit <> win.hover then
+    begin
+      win.repaint(win.hover); win.hover := hit; win.repaint(win.hover);
+    end;
+    id := 0; while id < 24 do begin win.tme[id] := chr(0); id := id + 1; end;
+    win.poke32(win.tme, 0, 24); win.poke32(win.tme, 4, 2);
+    win.poke64(win.tme, 8, hw);
+    k := winapi("user32.dll", "TrackMouseEvent", addr(win.tme[0]));
+    return 0;
+  end;
+
+  if m = WK.MOUSELEAVE then
+  begin
+    win.repaint(win.hover); win.hover := 0 - 1;
+    return 0;
+  end;
+
+  // A control SENDS this straight here; it is never in the queue the loop reads.
+  if m = WK.COMMAND then
+  begin
+    id := wp mod 65536;
+    if id >= WK.IDBASE then win.dispatch(id - WK.IDBASE);
+    return 0;
+  end;
+
+  if m = WK.DESTROY then
+  begin
+    win.alive := 0;
+    k := winapi("user32.dll", "PostQuitMessage", 0);
+    return 0;
+  end;
+
+  return winapi("user32.dll", "DefWindowProcA", hw, m, wp, lp);
+end;
+
+// Add a key. Returns its index, which is what the handler is given.
+function win.key(label: str; row: int; col: int; fill: int; ink: int): int;
+var k, h: int;
+begin
+  if win.nkeys >= WK.MAXKEYS then return 0 - 1;
+  k := win.nkeys;
+  win.zput(win.keys[k].label, label);
+  win.keys[k].row := row;
+  win.keys[k].col := col;
+  win.keys[k].fill := fill;
+  win.keys[k].ink := ink;
+  win.keys[k].span := 1;
+  win.nkeys := win.nkeys + 1;
+  win.zput(win.bname, "BUTTON");
+  h := winapi("user32.dll", "CreateWindowExA",
+              0, addr(win.bname[0]), addr(win.keys[k].label[0]),
+              bor(bor(WK.CHILD, WK.VISIBLE), WK.OWNERDRAW),
+              win.keyx(col), win.keyy(row), win.keyw, win.keyh,
+              win.hwnd, WK.IDBASE + k, win.hinst, 0);
+  return k;
+end;

@@ -1,0 +1,116 @@
+// The searcher must find exactly what is there -- no more, no fewer.
+//
+// The counts are checked against a log this test writes ITSELF, line by line, so the
+// expected answer is known by construction rather than by running another tool. That
+// matters: a test that compares two searchers passes when both are wrong the same way.
+include "io.wz";
+include "fs.wz";
+include "proc.wz";
+include "_helpers.wz";
+var
+  dir: array[0..1023] of char;
+  dirn: int;
+  binp: array[0..1023] of char;
+  logp: array[0..1279] of char;
+  outp: array[0..1279] of char;
+  buf: array[0..65535] of char;
+  blen, fd, i: int;
+  argbuf: array[0..63] of char;
+  patbuf: array[0..63] of char;
+
+function inwork(b: array of char; name: str): int;
+var n: int;
+begin
+  n := 0;
+  while n < dirn do begin b[n] := dir[n]; n := n + 1; end;
+  n := io.push(b, n, "/");
+  n := io.push(b, n, name);
+  b[n] := chr(0);
+  return n;
+end;
+
+// run loglens with two arguments, its output into outp; returns the number it printed
+function count(flag: str; pat: str): int;
+var pid, ofd, n, v, i: int;
+begin
+  n := io.push(argbuf, 0, flag); argbuf[n] := chr(0);
+  n := io.push(patbuf, 0, pat);  patbuf[n] := chr(0);
+  pid := proc.fork;
+  if pid = 0 then
+  begin
+    // the child writes to a file so the parent can read the answer back
+    ofd := sys3(SYS.open, addr(outp[0]), bor(bor(O_WRONLY, O_CREAT), O_TRUNC), 420);
+    if ofd < 0 then halt(127);
+    sys2(SYS.dup2, ofd, STDOUT);
+    proc.arg0(binp);
+    proc.arg(argbuf);
+    proc.arg(patbuf);
+    proc.arg(logp);
+    if proc.exec(binp) < 0 then halt(127);
+    halt(127);
+  end;
+  if pid < 0 then return -1;
+  if proc.wait(pid) <= 0 then return -1;
+  if not proc.ok(proc.status[0]) then return -1;
+  ofd := sys3(SYS.open, addr(outp[0]), O_RDONLY, 0);
+  if ofd < 0 then return -1;
+  n := io.read(ofd, addr(buf[0]), len(buf));
+  sys1(SYS.close, ofd);
+  v := 0;
+  i := 0;
+  while (i < n) and (buf[i] >= '0') and (buf[i] <= '9') do
+  begin
+    v := v * 10 + (ord(buf[i]) - 48);
+    i := i + 1;
+  end;
+  return v;
+end;
+
+procedure line(s: str);
+begin
+  blen := io.push(buf, blen, s);
+end;
+
+begin
+  if argc() < 3 then begin io.puts(STDERR, "needs a work dir and a bin dir\n"); halt(2); end;
+  dirn := 0;
+  while argch(1, dirn) <> chr(0) do begin dir[dirn] := argch(1, dirn); dirn := dirn + 1; end;
+  i := 0;
+  while argch(2, i) <> chr(0) do begin binp[i] := argch(2, i); i := i + 1; end;
+  i := io.push(binp, i, "/loglens");
+  binp[i] := chr(0);
+
+  i := inwork(logp, "known.log");
+  i := inwork(outp, "out.txt");
+
+  // A log whose answers are known because we wrote every line: three 500s, two 404s,
+  // five 200s, and one line where 500 is a response SIZE and not a status -- that last
+  // one is what a plain substring search gets wrong.
+  blen := 0;
+  line("1.1.1.1 - - [01/Sep/2026:10:00:00 +0000] \"GET / HTTP/1.1\" 200 1234 \"-\" \"x\" 5\n");
+  line("1.1.1.2 - - [01/Sep/2026:10:00:01 +0000] \"GET /a HTTP/1.1\" 500 111 \"-\" \"x\" 5\n");
+  line("1.1.1.3 - - [01/Sep/2026:10:00:02 +0000] \"GET /b HTTP/1.1\" 200 500 \"-\" \"x\" 5\n");
+  line("1.1.1.4 - - [01/Sep/2026:10:00:03 +0000] \"GET /c HTTP/1.1\" 404 222 \"-\" \"x\" 5\n");
+  line("1.1.1.5 - - [01/Sep/2026:10:00:04 +0000] \"POST /a HTTP/1.1\" 500 333 \"-\" \"x\" 5\n");
+  line("1.1.1.6 - - [01/Sep/2026:10:00:05 +0000] \"GET / HTTP/1.1\" 200 444 \"-\" \"x\" 5\n");
+  line("1.1.1.7 - - [01/Sep/2026:10:00:06 +0000] \"GET /d HTTP/1.1\" 404 555 \"-\" \"x\" 5\n");
+  line("1.1.1.8 - - [01/Sep/2026:10:00:07 +0000] \"GET /a HTTP/1.1\" 500 666 \"-\" \"x\" 5\n");
+  line("1.1.1.9 - - [01/Sep/2026:10:00:08 +0000] \"GET / HTTP/1.1\" 200 777 \"-\" \"x\" 5\n");
+  line("1.1.1.10 - - [01/Sep/2026:10:00:09 +0000] \"GET / HTTP/1.1\" 200 888 \"-\" \"x\" 5\n");
+  fd := sys3(SYS.open, addr(logp[0]), bor(bor(O_WRONLY, O_CREAT), O_TRUNC), 420);
+  if fd < 0 then begin io.puts(STDERR, "cannot write the test log\n"); halt(1); end;
+  if io.write(fd, addr(buf[0]), blen) <> blen then begin io.puts(STDERR, "short write\n"); halt(1); end;
+  sys1(SYS.close, fd);
+
+  t.eqint("status 500", count("-s", "500"), 3);
+  t.eqint("status 404", count("-s", "404"), 2);
+  t.eqint("status 200", count("-s", "200"), 5);
+  // THE CASE THAT MATTERS: line 3 has 500 as a response SIZE. A substring search finds
+  // four, a status search finds three.
+  t.eqint("500 as a substring finds one more", count("-c", "500"), 4);
+  t.eqint("a path", count("-c", "/a"), 3);
+  t.eqint("something that is not there", count("-c", "/nosuchpath"), 0);
+  t.eqint("a status that does not occur", count("-s", "418"), 0);
+
+  t.done;
+end.

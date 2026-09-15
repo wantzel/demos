@@ -1,6 +1,5 @@
 // list_tickets: every filter narrows on its own, an unset filter narrows nothing, and
 // `query` looks in both title and body, case-insensitively.
-program test_filters;
 
 include "json.wz";
 include "mcphttp.wz";

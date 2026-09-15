@@ -1,0 +1,105 @@
+// The calculator's arithmetic, without a window. Every key the face has, plus the edges
+// that a happy path never reaches: division by zero, a root of a negative, chaining, and
+// what the expression line says while you are halfway through a sum.
+include "io.wz";
+include "../src/x11-protocol/calc.wz";
+var b: array[0..63] of char; n, fails: int;
+procedure check(what: str; want: str);
+var i: int; ok: bool;
+begin
+  n := calc.text(b);
+  ok := n = slen(want);
+  if ok then
+  begin
+    i := 0;
+    while i < n do begin if b[i] <> schar(want, i) then ok := false; i := i + 1; end;
+  end;
+  io.puts(STDOUT, what); io.puts(STDOUT, " = ");
+  io.out(STDOUT, addr(b[0]), n);
+  if not ok then
+  begin
+    io.puts(STDOUT, "   WRONG, expected "); io.puts(STDOUT, want);
+    fails := fails + 1;
+  end;
+  io.puts(STDOUT, "\n");
+end;
+procedure checkexpr(what: str; want: str);
+var i: int; ok: bool;
+begin
+  n := calc.expr(b);
+  ok := n = slen(want);
+  if ok then
+  begin
+    i := 0;
+    while i < n do begin if b[i] <> schar(want, i) then ok := false; i := i + 1; end;
+  end;
+  io.puts(STDOUT, what); io.puts(STDOUT, " -> \"");
+  io.out(STDOUT, addr(b[0]), n); io.puts(STDOUT, "\"");
+  if not ok then
+  begin
+    io.puts(STDOUT, "   WRONG, expected \""); io.puts(STDOUT, want); io.puts(STDOUT, "\"");
+    fails := fails + 1;
+  end;
+  io.puts(STDOUT, "\n");
+end;
+procedure digits(s: str);
+var i: int;
+begin
+  i := 0;
+  while i < slen(s) do begin calc.digit(ord(schar(s, i)) - 48); i := i + 1; end;
+end;
+begin
+  fails := 0;
+
+  // the four operators
+  calc.reset; digits("12"); calc.key(K_ADD); digits("30"); calc.key(K_EQ); check("12+30", "42");
+  calc.reset; digits("100"); calc.key(K_SUB); digits("58"); calc.key(K_EQ); check("100-58", "42");
+  calc.reset; digits("7"); calc.key(K_MUL); digits("6"); calc.key(K_EQ);   check("7*6", "42");
+  calc.reset; digits("84"); calc.key(K_DIV); digits("2"); calc.key(K_EQ);  check("84/2", "42");
+
+  // chaining: the second operator applies the first
+  calc.reset; digits("2"); calc.key(K_ADD); digits("3"); calc.key(K_ADD); digits("4");
+  calc.key(K_EQ); check("2+3+4", "9");
+  calc.reset; digits("10"); calc.key(K_SUB); digits("3"); calc.key(K_MUL); digits("2");
+  calc.key(K_EQ); check("10-3*2 (left to right)", "14");
+
+  // = twice must not apply the operator again
+  calc.reset; digits("5"); calc.key(K_ADD); digits("5"); calc.key(K_EQ); calc.key(K_EQ);
+  check("5+5 then = twice", "10");
+
+  // the function keys
+  calc.reset; digits("9"); calc.key(K_SQRT);  check("sqrt 9", "3");
+  calc.reset; digits("10"); calc.key(K_SQRT); check("sqrt 10 (exact, so 3)", "3");
+  calc.reset; digits("12"); calc.key(K_SQ);   check("12 squared", "144");
+  calc.reset; digits("1"); calc.key(K_INV);   check("1/1", "1");
+  calc.reset; digits("250"); calc.key(K_PCT); check("250%", "2");
+  calc.reset; digits("9"); calc.key(K_NEG);   check("9 then +/-", "-9");
+
+  // editing
+  calc.reset; digits("123"); calc.key(K_BACK);   check("123 backspace", "12");
+  calc.reset; digits("7"); calc.key(K_BACK); calc.key(K_BACK); check("7 backspace twice", "0");
+  calc.reset; digits("42"); calc.key(K_CLEAR);   check("42 then C", "0");
+  calc.reset; digits("8"); calc.key(K_ADD); digits("9"); calc.key(K_CE);
+  check("8+9 then CE clears only the entry", "0");
+
+  // the edges that must refuse rather than lie
+  calc.reset; digits("5"); calc.key(K_DIV); digits("0"); calc.key(K_EQ);
+  check("5/0", "cannot divide by zero");
+  calc.reset; digits("5"); calc.key(K_NEG); calc.key(K_SQRT);
+  check("sqrt of a negative", "no root of a negative");
+  calc.reset; digits("0"); calc.key(K_INV); check("1/0", "cannot divide by zero");
+
+  // an error state clears, and only C or CE gets you out
+  calc.reset; digits("5"); calc.key(K_DIV); digits("0"); calc.key(K_EQ);
+  calc.key(K_ADD); check("after an error, + is ignored", "cannot divide by zero");
+  calc.key(K_CLEAR); check("and C recovers", "0");
+
+  // the expression line above the number
+  calc.reset; checkexpr("nothing pending", "");
+  calc.reset; digits("88"); calc.key(K_ADD); checkexpr("88 then +", "88 +");
+  digits("5"); checkexpr("while typing the second operand", "88 +");
+  calc.key(K_EQ); checkexpr("after =", "");
+
+  if fails = 0 then io.puts(STDOUT, "\nall correct\n")
+  else begin io.puts(STDOUT, "\nFAILURES\n"); halt(1); end;
+end.

@@ -7,7 +7,6 @@
 // It calls the tools directly rather than over HTTP: a tool is a function, so a test is a
 // program that calls it. No server, no port, no client -- and it runs in milliseconds.
 
-program list_order;
 
 include "json.wz";
 include "mcphttp.wz";

@@ -3,7 +3,6 @@
 // Comments are a message to someone (author + text); a work log line is a dated fact.
 // Both come back on get_ticket, both are oldest-first, and both bump `updated` --
 // otherwise "has anything happened here?" would need a scan of the conversation.
-program test_comments;
 
 include "json.wz";
 include "mcphttp.wz";

@@ -3,7 +3,6 @@
 // This is the test behind the decision not to have a separate patch call. The generated
 // parser gives every optional argument two flags -- `_ok` (it arrived) and `_null` (it
 // arrived as null) -- and that is enough to tell "leave it alone" from "clear it".
-program test_update;
 
 include "json.wz";
 include "mcphttp.wz";

@@ -1,7 +1,6 @@
 // next_ticket: the ordering rule lives here once, so every caller agrees what "next"
 // means -- not done, not someone else's, not blocked, highest priority first, oldest
 // first within a priority. "Nothing to do" comes back as found=false, not as a refusal.
-program test_next;
 
 include "json.wz";
 include "mcphttp.wz";

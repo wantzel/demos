@@ -17,7 +17,6 @@
 // the shapes and the tool table), then the handlers, then lib/tools.wz which builds the
 // dispatch from what it now knows exists.
 
-program wantzel_tasks;
 
 include "mcphttp.wz";
 include "router.wz";

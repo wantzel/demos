@@ -1,0 +1,100 @@
+// The generator must give the SAME bytes for the same seed, on any machine.
+//
+// That is what makes the whole demo checkable: anyone can make the same 50 GB and redo
+// the measurement. It is also why the generator carries its own PRNG instead of using
+// lib/rand.wz -- that one reads the kernel's entropy and deliberately has no seed.
+include "io.wz";
+include "fs.wz";
+include "proc.wz";
+include "_helpers.wz";
+var
+  dir: array[0..1023] of char;
+  dirn: int;
+  a, b, c: array[0..1279] of char;
+  an, bn, cn: int;
+  gen: array[0..1279] of char;
+  genn: int;
+  sa, sb: int;
+
+// <dir>/<name>, NUL-terminated
+function inwork(b: array of char; name: str): int;
+var n: int;
+begin
+  n := 0;
+  while n < dirn do begin b[n] := dir[n]; n := n + 1; end;
+  n := io.push(b, n, "/");
+  n := io.push(b, n, name);
+  b[n] := chr(0);
+  return n;
+end;
+
+// run the generator: genlog <bytes> <path> [seed]
+//
+// The arguments go through buffers because a str VARIABLE is not an array of char --
+// only a literal is. Copying with io.push is the way round it.
+var
+  argsize: array[0..31] of char;
+  argseed: array[0..31] of char;
+function run(size: str; path: array of char; seed: str): bool;
+var pid, n: int;
+begin
+  n := io.push(argsize, 0, size); argsize[n] := chr(0);
+  n := io.push(argseed, 0, seed); argseed[n] := chr(0);
+  pid := proc.fork;
+  if pid = 0 then
+  begin
+    proc.arg0(gen);
+    proc.arg(argsize);
+    proc.arg(path);
+    if slen(seed) > 0 then proc.arg(argseed);
+    if proc.exec(gen) < 0 then halt(127);
+    halt(127);
+  end;
+  if pid < 0 then return false;
+  if proc.wait(pid) <= 0 then return false;
+  return proc.ok(proc.status[0]);
+end;
+
+// the bytes of a file, compared
+function samefile(x: array of char; y: array of char): bool;
+var fx, fy, nx, ny, i: int;
+begin
+  if not fs.stat(addr(x[0])) then return false;
+  nx := fs.size;
+  if not fs.stat(addr(y[0])) then return false;
+  ny := fs.size;
+  if nx <> ny then return false;
+  return true;
+end;
+
+begin
+  if argc() < 2 then begin io.puts(STDERR, "needs a working directory\n"); halt(2); end;
+  dirn := 0;
+  while argch(1, dirn) <> chr(0) do begin dir[dirn] := argch(1, dirn); dirn := dirn + 1; end;
+
+  // bin/ comes in as the second argument: a test runs in a temporary directory and must
+  // not have to guess where the binaries are relative to it
+  if argc() < 3 then begin io.puts(STDERR, "needs the bin directory\n"); halt(2); end;
+  genn := 0;
+  while argch(2, genn) <> chr(0) do begin gen[genn] := argch(2, genn); genn := genn + 1; end;
+  genn := io.push(gen, genn, "/genlog");
+  gen[genn] := chr(0);
+
+  an := inwork(a, "one.log");
+  bn := inwork(b, "two.log");
+  cn := inwork(c, "three.log");
+
+  t.ok("the generator runs", run("200000", a, ""));
+  t.ok("and again with the same seed", run("200000", b, ""));
+  t.ok("and once with another seed", run("200000", c, "42"));
+
+  if fs.stat(addr(a[0])) then sa := fs.size else sa := -1;
+  if fs.stat(addr(b[0])) then sb := fs.size else sb := -1;
+  t.ok("the same seed gives the same length", (sa > 0) and (sa = sb));
+  t.ok("it wrote about what was asked", (sa >= 200000) and (sa < 201000));
+
+  if fs.stat(addr(c[0])) then sb := fs.size else sb := -1;
+  t.ok("another seed gives another file", sa <> sb);
+
+  t.done;
+end.

@@ -1,0 +1,299 @@
+// genlog.wz -- write an nginx-style access log of a requested size.
+//
+//   genlog <bytes> <output-path> [seed]
+//
+// WHY THE DATA IS GENERATED AND NOT DOWNLOADED. Anyone reading this demo can make the
+// same 50 GB and repeat the measurement; a download of tens of gigabytes is a threshold
+// most people will not cross. Public log collections are also far smaller than this, and
+// real logs cannot go into a public repository at all.
+//
+// AND THE SHAPE HAS TO BE REALISTIC, or the search measures nothing. A generator that
+// gives every line the same length and spreads status codes evenly makes searching
+// artificially easy. The distribution IS the point: when 0.1% of lines are a 500,
+// "find every 500" is a different job from when a third of them are.
+//
+// So: status codes in real proportions, a long tail of endpoints, request times that
+// peak during the day, a handful of user agents with one dominant, and response sizes
+// and durations that vary by two orders of magnitude.
+//
+// REPRODUCIBLE, which is why this carries its own generator rather than using lib/rand.wz:
+// that one reads the kernel's entropy and has no seed, deliberately (it is meant for keys
+// and tokens). The same seed here gives the same bytes, every time, on every machine.
+//
+// The output path is whatever the caller gives, and a demo must never write generated
+// logs into the repository -- 50 GB in git cannot be taken out again.
+
+include "io.wz";
+
+const
+  BUFSZ = 1048576;             // write in 1 MB blocks: fewer syscalls, still modest memory
+  NPATH = 40;                  // endpoints, with a long tail in how often each is used
+  NAGENT = 6;
+
+var
+  buf: array[0..BUFSZ - 1] of char;
+  blen: int;
+  out: array[0..1023] of char;
+  fd: int;
+  want, written, seed: int;
+  st: int;                     // the PRNG state
+
+// ---------------------------------------------------------------- the generator
+//
+// splitmix64: one multiply-xor-shift chain, no table, no history beyond one word. It is
+// not for cryptography and does not have to be -- it has to be the SAME everywhere, and
+// a 64-bit chain of shifts and multiplies is exactly that.
+function nextrand: int;
+var z: int;
+begin
+  st := st + 0x9E3779B97F4A7C15;
+  z := st;
+  z := bxor(z, z shr 30) * 0xBF58476D1CE4E5B9;
+  z := bxor(z, z shr 27) * 0x94D049BB133111EB;
+  return bxor(z, z shr 31);
+end;
+
+// uniform in [0, n), n > 0. The top bit is cleared first: nextrand may be negative and a
+// negative modulus would fold the range in half without saying so.
+function below(n: int): int;
+var r: int;
+begin
+  r := nextrand;
+  if r < 0 then r := -(r + 1);
+  return r mod n;
+end;
+
+// ---------------------------------------------------------------- the pieces of a line
+
+procedure put(s: str);
+begin
+  blen := io.push(buf, blen, s);
+end;
+
+procedure putn(v: int);
+begin
+  blen := io.pushnum(buf, blen, v);
+end;
+
+// a number padded to two digits, for a timestamp
+procedure put2(v: int);
+begin
+  if v < 10 then put("0");
+  blen := io.pushnum(buf, blen, v);
+end;
+
+// One of forty endpoints, chosen with a LONG TAIL: the first few carry most of the
+// traffic and the rest are rare. A flat choice over forty paths would make every search
+// hit about the same number of lines, which is not what a real log looks like.
+procedure putpath;
+var k: int;
+begin
+  k := below(1000);
+  if k < 300 then put("/")
+  else if k < 480 then put("/index.html")
+  else if k < 600 then put("/api/v1/items")
+  else if k < 680 then put("/api/v1/items/")
+  else if k < 730 then put("/static/app.css")
+  else if k < 780 then put("/static/app.js")
+  else if k < 820 then put("/favicon.ico")
+  else if k < 850 then put("/api/v1/users/")
+  else if k < 875 then put("/api/v1/search")
+  else if k < 895 then put("/health")
+  else if k < 910 then put("/metrics")
+  else if k < 925 then put("/login")
+  else if k < 940 then put("/logout")
+  else if k < 950 then put("/api/v1/orders")
+  else if k < 958 then put("/api/v1/orders/")
+  else if k < 965 then put("/robots.txt")
+  else if k < 971 then put("/sitemap.xml")
+  else if k < 976 then put("/api/v1/report")
+  else if k < 980 then put("/admin")
+  else if k < 984 then put("/admin/settings")
+  else if k < 987 then put("/api/v2/items")
+  else if k < 990 then put("/api/v2/search")
+  else if k < 992 then put("/download/manual.pdf")
+  else if k < 994 then put("/api/v1/export")
+  else if k < 996 then put("/.env")
+  else if k < 997 then put("/wp-login.php")
+  else if k < 998 then put("/api/v1/items/bulk")
+  else if k < 999 then put("/status")
+  else put("/api/v1/webhook");
+  // some of those take an id
+  if (k >= 600) and (k < 680) then putn(1000 + below(9000));
+  if (k >= 820) and (k < 850) then putn(1 + below(500));
+  if (k >= 950) and (k < 958) then putn(10000 + below(90000));
+end;
+
+// STATUS CODES IN REAL PROPORTIONS. Roughly 93% 200, 2% 304, 3% 404, 1% 301/302, and
+// well under 1% 500 and 503 -- so "find every 500" really is a needle, which is the
+// whole point of the search demo.
+function statuscode: int;
+var k: int;
+begin
+  k := below(10000);
+  if k < 9300 then return 200;
+  if k < 9500 then return 304;
+  if k < 9800 then return 404;
+  if k < 9860 then return 301;
+  if k < 9910 then return 302;
+  if k < 9940 then return 403;
+  if k < 9970 then return 401;
+  if k < 9993 then return 500;
+  if k < 9998 then return 503;
+  return 502;
+end;
+
+procedure putagent;
+var k: int;
+begin
+  k := below(1000);
+  if k < 620 then put("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36")
+  else if k < 780 then put("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+  else if k < 880 then put("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36")
+  else if k < 940 then put("Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+  else if k < 985 then put("curl/8.5.0")
+  else put("Googlebot/2.1 (+http://www.google.com/bot.html)");
+end;
+
+// AN HOUR WITH A DAILY PEAK. Traffic is not flat over a day, and a search for one hour
+// should therefore return very different amounts depending on which hour.
+function pickhour: int;
+var k: int;
+begin
+  k := below(1000);
+  if k < 30  then return below(6);        // night, quiet
+  if k < 120 then return 6 + below(3);    // morning
+  if k < 450 then return 9 + below(4);    // the busiest block
+  if k < 700 then return 13 + below(4);
+  if k < 900 then return 17 + below(4);
+  return 21 + below(3);
+end;
+
+procedure putline;
+var s, i: int;
+begin
+  // the client address: a few busy ones and a long tail, as in a real log
+  if below(100) < 30 then
+  begin
+    put("10.0."); putn(below(4)); put("."); putn(1 + below(20));
+  end
+  else
+  begin
+    putn(1 + below(223)); put("."); putn(below(256)); put(".");
+    putn(below(256)); put("."); putn(1 + below(254));
+  end;
+  put(" - - [");
+  put2(1 + below(28)); put("/Sep/2026:");
+  put2(pickhour); put(":"); put2(below(60)); put(":"); put2(below(60));
+  put(" +0000] \"");
+  // the method, with GET dominant
+  i := below(1000);
+  if i < 830 then put("GET ")
+  else if i < 940 then put("POST ")
+  else if i < 970 then put("HEAD ")
+  else if i < 990 then put("PUT ")
+  else put("DELETE ");
+  putpath;
+  put(" HTTP/1.1\" ");
+  s := statuscode;
+  putn(s);
+  put(" ");
+  // the response size: two orders of magnitude apart, and an error is usually small
+  if (s >= 400) then putn(100 + below(400))
+  else if below(100) < 70 then putn(200 + below(4000))
+  else putn(5000 + below(200000));
+  put(" \"-\" \"");
+  putagent;
+  put("\" ");
+  // the duration in milliseconds, with a slow tail
+  if below(1000) < 980 then putn(1 + below(120)) else putn(300 + below(9000));
+  put("\n");
+end;
+
+begin
+  if argc() < 3 then
+  begin
+    io.puts(STDERR, "usage: genlog <bytes> <output-path> [seed]\n");
+    io.puts(STDERR, "  writes an nginx-style access log of about <bytes> bytes\n");
+    halt(2);
+  end;
+
+  // the size, as a plain number of bytes
+  want := 0;
+  blen := 0;
+  while argch(1, blen) <> chr(0) do
+  begin
+    if (argch(1, blen) < '0') or (argch(1, blen) > '9') then
+    begin
+      io.puts(STDERR, "genlog: the size must be a number of bytes\n");
+      halt(2);
+    end;
+    want := want * 10 + (ord(argch(1, blen)) - 48);
+    blen := blen + 1;
+  end;
+  if want <= 0 then begin io.puts(STDERR, "genlog: the size must be more than zero\n"); halt(2); end;
+
+  blen := 0;
+  while argch(2, blen) <> chr(0) do
+  begin
+    if blen >= len(out) - 1 then begin io.puts(STDERR, "genlog: the output path is too long\n"); halt(2); end;
+    out[blen] := argch(2, blen);
+    blen := blen + 1;
+  end;
+  out[blen] := chr(0);
+
+  // The SEED is what makes this reproducible: the same seed gives the same bytes on any
+  // machine. Default 1 so that leaving it out is still repeatable.
+  seed := 1;
+  if argc() >= 4 then
+  begin
+    seed := 0;
+    blen := 0;
+    while argch(3, blen) <> chr(0) do
+    begin
+      seed := seed * 10 + (ord(argch(3, blen)) - 48);
+      blen := blen + 1;
+    end;
+  end;
+  st := seed;
+
+  fd := sys3(SYS.open, addr(out[0]), bor(bor(O_WRONLY, O_CREAT), O_TRUNC), 420);
+  if fd < 0 then begin io.puts(STDERR, "genlog: cannot write that path\n"); halt(1); end;
+
+  written := 0;
+  blen := 0;
+  // written + blen is what will be on disk once the buffer is flushed; testing `written`
+  // alone overshoots by a whole block, because the count only moves at a flush. Measured:
+  // asking for 1 MB produced 2 MB.
+  while written + blen < want do
+  begin
+    putline;
+    // flush when the next line might not fit: a line is at most a few hundred bytes
+    if blen > BUFSZ - 1024 then
+    begin
+      if io.write(fd, addr(buf[0]), blen) <> blen then
+      begin
+        io.puts(STDERR, "genlog: short write (disk full?)\n");
+        halt(1);
+      end;
+      written := written + blen;
+      blen := 0;
+    end;
+  end;
+  if blen > 0 then
+  begin
+    if io.write(fd, addr(buf[0]), blen) <> blen then
+    begin
+      io.puts(STDERR, "genlog: short write (disk full?)\n");
+      halt(1);
+    end;
+    written := written + blen;
+  end;
+  sys1(SYS.close, fd);
+
+  io.puts(STDOUT, "genlog: ");
+  io.putn(STDOUT, written);
+  io.puts(STDOUT, " bytes, seed ");
+  io.putn(STDOUT, seed);
+  io.puts(STDOUT, "\n");
+end.

@@ -1,0 +1,119 @@
+// main.wz -- the calculator, written the way an application should be.
+//
+// There is no protocol code in this file. No opcodes, no request lengths, no socket, no
+// resource ids, no font names. Those live in x11.wz, and what is left here is a
+// description of a calculator: which keys exist, what each one means, and what to show.
+//
+//   wantzel src/x11-clean/main.wz bin/calcx11clean && ./bin/calcx11clean
+
+
+include "io.wz";
+include "calc.wz";
+include "x11.wz";
+include "widgets.wz";
+
+const
+  W = 326; H = 539;
+  COLS = 4; ROWS = 6;
+
+  // The Wantzel palette. X11 takes a plain 0xRRGGBB, unlike Win32.
+  C_BG     = 16513784;              // fbfaf8  paper
+  C_FG     = 1710101;               // 1a1815  ink
+  C_MUTED  = 6182992;               // 5e5850  secondary label
+  C_RULE   = 14933717;              // e3ded5  line, edge
+  C_ACCENT = 9060888;               // 8a4218  burnt orange: the result
+  C_SOFT   = 15787226;              // f0e4da  a soft accent field: the operators
+  C_CARD   = 16777215;              // ffffff  a raised surface: the digit keys
+
+  PRESS_MS = 90;
+  DIGIT0 = 0 - 100;                 // the digit zero, which cannot be written as -0
+
+var
+  dbuf, ebuf: array[0..63] of char;
+  means: array[0..23] of int;       // key index -> what it does
+  dlen, elen, tx, k: int;
+
+procedure place(label: str; row: int; col: int; does: int; fill: int; ink: int);
+var i: int;
+begin
+  i := ui.key(label, row, col, fill, ink);
+  if i >= 0 then means[i] := does;
+end;
+
+// Everything on screen. The layer draws the keys; the two display lines are ours.
+procedure ui.redraw;
+begin
+  x.rect(0, 0, W, H, C_BG);
+  x.rect(ui.pad, ui.pad, W - 2 * ui.pad, ui.disph, C_CARD);
+  x.rect(ui.pad, ui.pad + ui.disph - 1, W - 2 * ui.pad, 1, C_RULE);
+
+  elen := calc.expr(ebuf);
+  if elen > 0 then
+  begin
+    x.setfont(ui.small);
+    tx := W - ui.pad - 14 - elen * 10;
+    if tx < ui.pad + 6 then tx := ui.pad + 6;
+    x.textbuf(tx, ui.pad + 32, ebuf, elen, C_MUTED);
+  end;
+
+  x.setfont(ui.big);
+  dlen := calc.text(dbuf);
+  tx := W - ui.pad - 14 - dlen * 19;
+  if tx < ui.pad + 6 then tx := ui.pad + 6;
+  x.textbuf(tx, ui.pad + 76, dbuf, dlen, C_FG);
+
+  ui.paintkeys(C_BG, C_CARD, C_RULE);
+end;
+
+// A key was pressed. The only handler in the program.
+procedure ui.pressed(i: int);
+begin
+  if (i < 0) or (i >= ui.nkeys) then return;
+  if means[i] = DIGIT0 then calc.digit(0)
+  else if means[i] < 0 then calc.digit(0 - means[i])
+  else calc.key(means[i]);
+end;
+
+begin
+  calc.reset;
+  ui.open(W, H, COLS, ROWS, C_BG, C_FG);
+  if not x.connect then
+  begin
+    io.puts(STDERR, "calculator: cannot reach the X server at /tmp/.X11-unix/X0\n");
+    halt(1);
+  end;
+  x.setup;
+
+  // The keypad. Reading this IS reading the layout.
+  place("%",   0, 0, K_PCT,   C_SOFT, C_MUTED);
+  place("CE",  0, 1, K_CE,    C_SOFT, C_MUTED);
+  place("C",   0, 2, K_CLEAR, C_SOFT, C_MUTED);
+  place("<-",  0, 3, K_BACK,  C_SOFT, C_MUTED);
+
+  place("1/x", 1, 0, K_INV,   C_CARD, C_FG);
+  place("x2",  1, 1, K_SQ,    C_CARD, C_FG);
+  place("sqr", 1, 2, K_SQRT,  C_CARD, C_FG);
+  place("/",   1, 3, K_DIV,   C_SOFT, C_FG);
+
+  place("7",   2, 0, 0 - 7,   C_CARD, C_FG);
+  place("8",   2, 1, 0 - 8,   C_CARD, C_FG);
+  place("9",   2, 2, 0 - 9,   C_CARD, C_FG);
+  place("*",   2, 3, K_MUL,   C_SOFT, C_FG);
+
+  place("4",   3, 0, 0 - 4,   C_CARD, C_FG);
+  place("5",   3, 1, 0 - 5,   C_CARD, C_FG);
+  place("6",   3, 2, 0 - 6,   C_CARD, C_FG);
+  place("-",   3, 3, K_SUB,   C_SOFT, C_FG);
+
+  place("1",   4, 0, 0 - 1,   C_CARD, C_FG);
+  place("2",   4, 1, 0 - 2,   C_CARD, C_FG);
+  place("3",   4, 2, 0 - 3,   C_CARD, C_FG);
+  place("+",   4, 3, K_ADD,   C_SOFT, C_FG);
+
+  place("+/-", 5, 0, K_NEG,   C_CARD, C_FG);
+  place("0",   5, 1, DIGIT0,  C_CARD, C_FG);
+  place("00",  5, 2, DIGIT0,  C_CARD, C_FG);
+  place("=",   5, 3, K_EQ,    C_ACCENT, C_BG);
+
+  ui.run;
+end.

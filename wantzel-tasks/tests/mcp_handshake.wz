@@ -9,7 +9,6 @@
 //
 // So the check is not "does initialize return the right JSON". It is "is this server
 // identified at all", asked before anyone connects.
-program test_mcp_handshake;
 
 include "json.wz";
 include "mcphttp.wz";
