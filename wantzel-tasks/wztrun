@@ -43,7 +43,7 @@ fi
 # is still moving, so a demo that does not say which compiler it needs is a demo that will
 # one day fail to build for a reason nobody can see. A newer compiler is only a warning --
 # it usually works, and you should find out by trying rather than by being refused.
-WANTZEL_TESTED=0.1.2
+WANTZEL_TESTED=0.2.0
 have=$("$WANTZEL" --version 2>/dev/null | awk '{print $2}')
 if [ -n "$have" ] && [ "$have" != "$WANTZEL_TESTED" ]; then
   echo "note: built and tested with Wantzel $WANTZEL_TESTED, you have $have" >&2
